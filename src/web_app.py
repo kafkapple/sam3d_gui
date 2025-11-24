@@ -2109,16 +2109,41 @@ dataset:
 def main():
     """웹 앱 실행"""
     import os
+    import socket
 
     app = SAMInteractiveWebApp()
     demo = app.create_interface()
 
-    # 포트 설정: 환경 변수 또는 7860-7870 범위에서 자동 선택
-    port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+    # 포트 설정: 환경 변수 또는 7860-7900 범위에서 자동 선택
+    start_port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+
+    # 사용 가능한 포트 찾기
+    def find_free_port(start, end=None):
+        """Find a free port in the range [start, end]"""
+        if end is None:
+            end = start + 40  # 7860-7900
+
+        for port in range(start, end + 1):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('', port))
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    return port
+            except OSError:
+                continue
+        return None
+
+    port = find_free_port(start_port)
+    if port is None:
+        print(f"❌ Cannot find free port in range {start_port}-{start_port + 40}")
+        print("💡 Kill existing processes: pkill -f web_app.py")
+        return
+
+    print(f"✓ Using port: {port}")
 
     demo.launch(
         server_name="0.0.0.0",
-        server_port=port,  # 포트 사용 중이면 자동으로 다음 포트 시도
+        server_port=port,
         share=False,
         debug=True,
         max_threads=40  # 동시 처리 증가
