@@ -83,14 +83,36 @@ class SAM3DProcessor:
     def initialize_sam3d(self):
         """Lazy initialization of SAM 3D model"""
         if self.inference_model is None:
+            print(f"\n🔹 SAM 3D 모델 초기화 중...")
+            print(f"   Checkpoint 경로: {self.sam3d_checkpoint}")
+
+            if self.sam3d_checkpoint is None:
+                raise RuntimeError(
+                    "SAM 3D checkpoint path is None. "
+                    "Please check config/model_config.yaml"
+                )
+
             config_path = os.path.join(self.sam3d_checkpoint, "pipeline.yaml")
+            print(f"   Config 파일 확인: {config_path}")
+
             if not os.path.exists(config_path):
                 raise FileNotFoundError(
                     f"SAM 3D config not found at {config_path}. "
                     "Please download checkpoints first."
                 )
+
+            print(f"   ✓ Config 파일 존재 확인")
+            print(f"   Inference 클래스 로드 중...")
+
+            if Inference is None:
+                raise ImportError(
+                    "SAM 3D Inference class not imported. "
+                    "Check if sam-3d-objects is installed correctly."
+                )
+
             self.inference_model = Inference(config_path, compile=False)
-            print(f"SAM 3D model loaded from {self.sam3d_checkpoint}")
+            print(f"   ✓ SAM 3D 모델 로드 완료")
+            print(f"   Model type: {type(self.inference_model)}")
 
     def extract_frames(
         self,
@@ -290,11 +312,38 @@ class SAM3DProcessor:
         Returns:
             Dictionary containing reconstruction results
         """
-        self.initialize_sam3d()
+        print("\n🔹 3D Reconstruction 시작:")
+        print(f"   Frame shape: {frame.shape}")
+        print(f"   Mask shape: {mask.shape}")
+        print(f"   Seed: {seed}")
+        print(f"   SAM3D checkpoint: {self.sam3d_checkpoint}")
 
-        # Run SAM 3D inference
-        output = self.inference_model(frame, mask, seed=seed)
-        return output
+        try:
+            self.initialize_sam3d()
+            print(f"   ✓ SAM 3D 모델 초기화 완료")
+        except Exception as e:
+            print(f"   ❌ SAM 3D 초기화 실패: {e}")
+            raise
+
+        if self.inference_model is None:
+            error_msg = "SAM 3D inference model is None after initialization"
+            print(f"   ❌ {error_msg}")
+            raise RuntimeError(error_msg)
+
+        print(f"   Inference model type: {type(self.inference_model)}")
+        print(f"   Running inference...")
+
+        try:
+            # Run SAM 3D inference
+            output = self.inference_model(frame, mask, seed=seed)
+            print(f"   ✓ Inference 완료")
+            print(f"   Output keys: {output.keys() if output else 'None'}")
+            return output
+        except Exception as e:
+            print(f"   ❌ Inference 실행 실패: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def export_mesh(
         self,

@@ -761,7 +761,12 @@ class SAMInteractiveWebApp:
         """
         세그멘테이션 결과로 3D mesh 생성
         """
+        print("\n" + "="*80)
+        print("🔹 generate_3d_mesh() 시작")
+        print("="*80)
+
         if len(self.frames) == 0 or all(m is None for m in self.masks):
+            print("❌ 프레임 또는 마스크 없음")
             return None, "먼저 세그멘테이션을 완료하세요"
 
         try:
@@ -770,10 +775,16 @@ class SAMInteractiveWebApp:
             # SAM 3D 체크포인트 확인
             if self.config:
                 checkpoint_dir = Path(self.config.sam3d_checkpoint_dir).expanduser()
+                print(f"✓ Config에서 checkpoint 경로 로드: {checkpoint_dir}")
             else:
-                checkpoint_dir = Path("~/dev/sam-3d-objects/checkpoints/hf").expanduser()
+                checkpoint_dir = Path("~/dev/sam-3d-objects/checkpoints/hf/checkpoints").expanduser()
+                print(f"✓ 기본 checkpoint 경로 사용: {checkpoint_dir}")
+
+            print(f"✓ Checkpoint 존재 확인 중: {checkpoint_dir}")
+            print(f"   pipeline.yaml 존재: {(checkpoint_dir / 'pipeline.yaml').exists()}")
 
             if not (checkpoint_dir / "pipeline.yaml").exists():
+                print("❌ pipeline.yaml 파일이 없음")
                 progress(0.1, desc="SAM 3D 체크포인트 없음, 다운로드 시작...")
 
                 download_success = self.download_sam3d_checkpoint(progress)
@@ -800,19 +811,33 @@ git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
             frame = self.frames[mid_idx]
             mask = self.masks[mid_idx]
 
+            print(f"\n✓ 대표 프레임 선택: {mid_idx + 1}/{len(self.frames)}")
+            print(f"   Frame shape: {frame.shape}")
+            print(f"   Mask shape: {mask.shape if mask is not None else 'None'}")
+            print(f"   Mask type: {type(mask)}")
+
             if mask is None:
+                print("❌ 중간 프레임에 마스크 없음")
                 return None, "중간 프레임에 마스크가 없습니다"
 
             # 3D 재구성 시도
+            print("\n✓ 3D 재구성 시작...")
             progress(0.5, desc="SAM 3D 재구성 중...")
 
             try:
                 reconstruction = self.processor.reconstruct_3d(frame, mask)
+                print(f"✓ Reconstruction 완료: {type(reconstruction)}")
 
                 if reconstruction:
                     # PLY 저장
-                    output_path = "outputs/interactive_reconstruction.ply"
-                    self.processor.export_mesh(reconstruction, output_path, format='ply')
+                    project_root = Path(__file__).parent.parent
+                    output_dir = project_root / "outputs" / "3d_meshes"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    output_path = output_dir / "reconstruction.ply"
+
+                    print(f"\n✓ Mesh 저장 중: {output_path}")
+                    self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+                    print(f"✓ Mesh 저장 완료")
 
                     progress(1.0, desc="완료!")
 
@@ -829,12 +854,17 @@ meshlab {output_path}
 
 또는 온라인: https://3dviewer.net/
 """
-                    return output_path, status
+                    print("✅ generate_3d_mesh() 완료")
+                    return str(output_path), status
                 else:
+                    print("❌ Reconstruction이 None")
                     return None, "3D 재구성 실패 (SAM 3D 체크포인트 필요)"
 
             except Exception as e:
                 # SAM 3D 없으면 간단한 point cloud만 생성
+                print(f"❌ 3D 재구성 실패: {e}")
+                import traceback
+                traceback.print_exc()
                 return None, f"3D 재구성 실패: {str(e)}\n\nSAM 3D 체크포인트가 필요합니다."
 
         except Exception as e:
@@ -1337,13 +1367,14 @@ meshlab {output_path}
 
             progress(0, desc="Fauna 데이터셋 준비 중...")
 
-            # 출력 디렉토리 설정 - 자동으로 다음 시퀀스 번호 찾기
-            fauna_root = Path.home() / "dev/3DAnimals/data/fauna/Fauna_dataset/large_scale"
+            # 출력 디렉토리 설정 - outputs 하위에 체계적으로 저장
+            project_root = Path(__file__).parent.parent
+            fauna_root = project_root / "outputs" / "fauna_datasets"
             sequence_name = self._find_next_sequence(fauna_root, animal_name)
             output_dir = fauna_root / animal_name / "train" / sequence_name
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"🔹 Fauna 데이터셋 저장:")
+            print(f"\n🔹 Fauna 데이터셋 저장:")
             print(f"   Animal: {animal_name}")
             print(f"   Sequence: {sequence_name}")
             print(f"   Path: {output_dir}")
