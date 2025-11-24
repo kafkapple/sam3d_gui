@@ -1,0 +1,29 @@
+# SAM 3D GUI Requirements
+
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+pillow>=9.0.0
+matplotlib>=3.4.0
+
+# Deep learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 3D processing
+trimesh>=3.9.0
+open3d>=0.15.0
+
+# SAM 3D dependencies (from original repo)
+omegaconf>=2.1.0
+hydra-core>=1.1.0
+utils3d
+kaolin
+pytorch3d
+gradio
+
+# GUI (typically included with Python)
+# tkinter - included in standard Python installation
+
+# Optional for advanced visualization
+# pyvista>=0.36.0

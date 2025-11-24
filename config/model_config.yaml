@@ -1,0 +1,49 @@
+# SAM 3D GUI - 통합 모델 체크포인트 설정
+# Hydra 기반 configuration
+
+# SAM 2 설정 (Interactive segmentation)
+sam2:
+  name: "SAM 2.1 Hiera Large"
+  checkpoint: "${oc.env:HOME}/dev/segment-anything-2/checkpoints/sam2.1_hiera_large.pt"
+  config: "configs/sam2.1/sam2.1_hiera_l.yaml"
+  device: "auto"  # "auto" (GPU 자동 감지), "cuda", "cpu"
+  # RTX 3060 및 A6000에서 사용 가능
+
+  # Alternative models (commented out)
+  # checkpoint: "${oc.env:HOME}/dev/segment-anything-2/checkpoints/sam2.1_hiera_base_plus.pt"
+  # config: "configs/sam2.1/sam2.1_hiera_b+.yaml"
+
+# SAM 3D 설정 (3D reconstruction)
+sam3d:
+  name: "SAM 3D Objects"
+  # 기본 경로: 프로젝트 external 서브모듈
+  checkpoint_dir: "${oc.env:HOME}/dev/sam3d_gui/external/sam-3d-objects/checkpoints/hf"
+  # 대체 경로: standalone 설치
+  checkpoint_dir_alt: "${oc.env:HOME}/dev/sam-3d-objects/checkpoints/hf"
+
+  # 다운로드 안내
+  download_url: "https://huggingface.co/facebook/sam-3d-objects"
+  download_command: "# Run from sam-3d-objects directory:\n# python download_checkpoints.py"
+
+# 데이터 경로 설정
+data:
+  default_dir: "${oc.env:HOME}/dev/data/markerless_mouse/"
+  output_dir: "${oc.env:HOME}/dev/sam3d_gui/outputs/"
+
+# 추론 설정
+inference:
+  sam2:
+    multimask_output: true
+    stability_score_thresh: 0.95
+
+  sam3d:
+    compile: false
+    device: "cuda"
+
+# 시각화 설정
+visualization:
+  foreground_color: [0, 255, 0]  # Green
+  background_color: [255, 0, 0]  # Red
+  point_size: 5
+  point_border: 2
+  mask_alpha: 0.4

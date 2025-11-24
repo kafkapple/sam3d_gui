@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.env
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Conda
+.conda/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+outputs/
+*.ply
+*.obj
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Logs
+*.log
+logs/
+nohup.out
+sam_gui*.log
+/tmp/
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints (large files)
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# SAM 3D checkpoints (HuggingFace)
+external/sam-3d-objects/
+**/sam-3d-objects/checkpoints/
