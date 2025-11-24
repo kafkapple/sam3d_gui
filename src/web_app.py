@@ -1786,7 +1786,7 @@ dataset:
 
                     clear_all_btn.click(
                         fn=self.clear_annotations,
-                        outputs=[annotated_img, status_text]
+                        outputs=[image_display, status_text]
                     )
 
                     # 세션 관리 이벤트
