@@ -15,6 +15,7 @@ import json
 
 from sam3d_processor import SAM3DProcessor
 from config_loader import ModelConfig
+from lite_annotator import LiteAnnotator
 
 # Load configuration
 try:
@@ -124,6 +125,20 @@ class SAMInteractiveWebApp:
             self.default_data_dir = config.default_data_dir
         else:
             self.default_data_dir = "/home/joon/dev/data/markerless_mouse/"
+
+        # LiteAnnotator 초기화 (Tab 3: Lite Mode)
+        self.lite_annotator = None
+        if SAM2_AVAILABLE:
+            try:
+                print("Initializing Lite Annotator...")
+                self.lite_annotator = LiteAnnotator(
+                    sam2_base_path=SAM2_PATH,
+                    device=self.sam2_device if self.sam2_device else "auto"
+                )
+                print("✓ Lite Annotator initialized")
+            except Exception as e:
+                print(f"Warning: Failed to initialize Lite Annotator: {e}")
+                self.lite_annotator = None
 
     def quick_process(self, data_dir: str, video_file: str,
                      start_time: float, duration: float,
@@ -1447,6 +1462,83 @@ dataset:
             error_detail = traceback.format_exc()
             return f"❌ 저장 실패: {str(e)}\n\n```\n{error_detail}\n```"
 
+    # ===== Lite Annotator Event Handlers =====
+
+    def _lite_load_source(
+        self,
+        input_path: str,
+        input_type: str,
+        pattern: str
+    ) -> Tuple[str, gr.Slider, Dict]:
+        """Load video or image folder"""
+        if self.lite_annotator is None:
+            return "❌ Lite Annotator not initialized", gr.Slider(maximum=100), {}
+
+        success, msg, total_frames = self.lite_annotator.change_input_source(
+            input_path, input_type, pattern
+        )
+
+        if success:
+            # Update slider maximum
+            new_slider = gr.Slider(minimum=0, maximum=max(0, total_frames - 1), value=0, step=1)
+            info = self.lite_annotator.get_info()
+            return msg, new_slider, info
+        else:
+            return msg, gr.Slider(maximum=100), {}
+
+    def _lite_load_model(self, model_name: str) -> str:
+        """Load SAM 2.1 model"""
+        if self.lite_annotator is None:
+            return "❌ Lite Annotator not initialized"
+
+        msg = self.lite_annotator.load_model(model_name)
+        return msg
+
+    def _lite_load_frame(self, frame_idx: int) -> Tuple[Optional[np.ndarray], str, Dict]:
+        """Load frame at index"""
+        if self.lite_annotator is None:
+            return None, "❌ Lite Annotator not initialized", {}
+
+        frame, msg = self.lite_annotator.load_frame(int(frame_idx))
+        info = self.lite_annotator.get_info()
+
+        return frame, msg, info
+
+    def _lite_add_point(self, evt: gr.SelectData, point_type: str) -> Tuple[np.ndarray, str]:
+        """Add point from click event"""
+        if self.lite_annotator is None:
+            return None, "❌ Lite Annotator not initialized"
+
+        x, y = evt.index[0], evt.index[1]
+        frame, msg = self.lite_annotator.add_point(x, y, point_type)
+
+        return frame, msg
+
+    def _lite_generate_mask(self) -> Tuple[np.ndarray, Optional[np.ndarray], str]:
+        """Generate mask from points"""
+        if self.lite_annotator is None:
+            return None, None, "❌ Lite Annotator not initialized"
+
+        frame_vis, mask_binary, msg = self.lite_annotator.generate_mask()
+
+        return frame_vis, mask_binary, msg
+
+    def _lite_save_annotation(self) -> str:
+        """Save current annotation"""
+        if self.lite_annotator is None:
+            return "❌ Lite Annotator not initialized"
+
+        msg = self.lite_annotator.save_annotation()
+        return msg
+
+    def _lite_clear_points(self) -> Tuple[np.ndarray, str]:
+        """Clear all points"""
+        if self.lite_annotator is None:
+            return None, "❌ Lite Annotator not initialized"
+
+        frame, msg = self.lite_annotator.clear_points()
+        return frame, msg
+
     def create_interface(self):
         """Gradio 인터페이스 생성 - 통합 버전"""
 
@@ -1815,6 +1907,148 @@ dataset:
                         inputs=[quick_data_dir, quick_video_list, quick_start,
                                quick_duration, quick_threshold, quick_method],
                         outputs=[quick_image, quick_status]
+                    )
+
+                # ===== Tab 3: Lite Annotator =====
+                with gr.Tab("📝 Lite Annotator"):
+                    gr.Markdown("### 효율적 Annotation 모드")
+                    gr.Markdown("Direct video/image loading, multi-model selection, auto-restore")
+
+                    with gr.Row():
+                        # Left column: Input & Frame Display
+                        with gr.Column(scale=2):
+                            # Input source section
+                            gr.Markdown("#### 📂 Input Source")
+                            with gr.Row():
+                                lite_input_path = gr.Textbox(
+                                    label="Video/Image Folder Path",
+                                    placeholder="/path/to/video.mp4 or /path/to/images/",
+                                    scale=3
+                                )
+                                lite_input_type = gr.Radio(
+                                    choices=["video", "images"],
+                                    value="video",
+                                    label="Type",
+                                    scale=1
+                                )
+
+                            with gr.Row():
+                                lite_pattern = gr.Textbox(
+                                    label="Image Pattern (for images type)",
+                                    value="*.png",
+                                    scale=2
+                                )
+                                lite_load_btn = gr.Button("📥 Load Source", variant="primary", scale=1)
+
+                            lite_load_status = gr.Markdown("No input loaded")
+
+                            # Frame display
+                            gr.Markdown("#### 🖼️ Frame")
+                            lite_frame_display = gr.Image(
+                                label="Current Frame",
+                                type="numpy",
+                                height=500,
+                                interactive=True  # Enable click events
+                            )
+
+                            # Frame navigation
+                            with gr.Row():
+                                lite_frame_slider = gr.Slider(
+                                    label="Frame Index",
+                                    minimum=0,
+                                    maximum=100,
+                                    value=0,
+                                    step=1,
+                                    interactive=True
+                                )
+
+                        # Right column: Controls & Mask Display
+                        with gr.Column(scale=1):
+                            # Model selection
+                            gr.Markdown("#### 🤖 Model Selection")
+                            lite_model_dropdown = gr.Dropdown(
+                                choices=["tiny", "small", "base_plus", "large"],
+                                value="large",
+                                label="SAM 2.1 Model",
+                                info="tiny: fastest, large: best quality"
+                            )
+                            lite_load_model_btn = gr.Button("Load Model", size="sm")
+
+                            # Point annotation
+                            gr.Markdown("#### 🎨 Annotation")
+                            lite_point_type = gr.Radio(
+                                choices=["foreground", "background"],
+                                value="foreground",
+                                label="Point Type"
+                            )
+
+                            # Action buttons
+                            with gr.Column():
+                                lite_generate_btn = gr.Button("🎯 Generate Mask", variant="primary")
+                                lite_save_btn = gr.Button("💾 Save Annotation", variant="secondary")
+                                lite_clear_btn = gr.Button("🔄 Clear Points", variant="stop")
+
+                            # Mask display
+                            gr.Markdown("#### 🎭 Mask")
+                            lite_mask_display = gr.Image(
+                                label="Generated Mask",
+                                type="numpy",
+                                height=200
+                            )
+
+                            # Status
+                            lite_status = gr.Markdown("**Status:** Load source to start")
+
+                            # Info panel
+                            gr.Markdown("#### ℹ️ Info")
+                            lite_info = gr.JSON(label="Current State", value={})
+
+                    # Event handlers for Lite Annotator
+
+                    # Load source
+                    lite_load_btn.click(
+                        fn=self._lite_load_source,
+                        inputs=[lite_input_path, lite_input_type, lite_pattern],
+                        outputs=[lite_load_status, lite_frame_slider, lite_info]
+                    )
+
+                    # Load model
+                    lite_load_model_btn.click(
+                        fn=self._lite_load_model,
+                        inputs=[lite_model_dropdown],
+                        outputs=[lite_status]
+                    )
+
+                    # Frame slider change
+                    lite_frame_slider.change(
+                        fn=self._lite_load_frame,
+                        inputs=[lite_frame_slider],
+                        outputs=[lite_frame_display, lite_status, lite_info]
+                    )
+
+                    # Click on frame to add point
+                    lite_frame_display.select(
+                        fn=self._lite_add_point,
+                        inputs=[lite_point_type],
+                        outputs=[lite_frame_display, lite_status]
+                    )
+
+                    # Generate mask
+                    lite_generate_btn.click(
+                        fn=self._lite_generate_mask,
+                        outputs=[lite_frame_display, lite_mask_display, lite_status]
+                    )
+
+                    # Save annotation
+                    lite_save_btn.click(
+                        fn=self._lite_save_annotation,
+                        outputs=[lite_status]
+                    )
+
+                    # Clear points
+                    lite_clear_btn.click(
+                        fn=self._lite_clear_points,
+                        outputs=[lite_frame_display, lite_status]
                     )
 
         return demo
