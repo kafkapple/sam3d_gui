@@ -845,18 +845,31 @@ meshlab {output_path}
         """
         Annotation 세션 전체 저장 (annotation points + masks + metadata)
         """
+        print("\n" + "="*80)
+        print("🔹 save_annotation_session() 시작")
+        print("="*80)
+
         if len(self.frames) == 0:
+            print("❌ 저장 실패: 프레임 없음")
             return "저장할 데이터가 없습니다"
+
+        print(f"✓ 프레임 수: {len(self.frames)}")
+        print(f"✓ 마스크 수: {len(self.masks)}")
+        print(f"✓ Foreground points: {len(self.annotations['foreground'])}")
+        print(f"✓ Background points: {len(self.annotations['background'])}")
 
         try:
             # 세션 ID 생성 (timestamp)
             from datetime import datetime
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            print(f"✓ 세션 ID 생성: {session_id}")
 
             output_dir = Path(f"outputs/sessions/{session_id}")
             output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"✓ 출력 디렉토리 생성: {output_dir}")
 
             # 1. Annotation 메타데이터 저장 (JSON)
+            print("\n🔹 Step 1: 메타데이터 구성 중...")
             metadata = {
                 "session_id": session_id,
                 "video_path": self.video_path,
@@ -868,60 +881,91 @@ meshlab {output_path}
                 },
                 "frame_info": []
             }
+            print(f"✓ 메타데이터 구성 완료")
 
             # 2. 각 프레임 저장
+            print("\n🔹 Step 2: 프레임별 저장 시작...")
             saved_masks = 0
             for i, (frame, mask) in enumerate(zip(self.frames, self.masks)):
+                if i % 10 == 0:  # 10프레임마다 진행상황 출력
+                    print(f"  진행: {i}/{len(self.frames)} 프레임 처리 중...")
                 frame_dir = output_dir / f"frame_{i:04d}"
                 frame_dir.mkdir(exist_ok=True)
 
                 # 원본 프레임 저장
-                frame_path = frame_dir / "original.png"
-                cv2.imwrite(str(frame_path), frame)
+                try:
+                    frame_path = frame_dir / "original.png"
+                    success = cv2.imwrite(str(frame_path), frame)
+                    if not success:
+                        print(f"  ⚠️ 프레임 {i} 저장 실패: {frame_path}")
+                except Exception as e:
+                    print(f"  ❌ 프레임 {i} 저장 오류: {str(e)}")
+                    raise
 
                 # 마스크 저장 (있으면)
                 if mask is not None:
-                    mask_path = frame_dir / "mask.png"
-                    cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
+                    try:
+                        mask_path = frame_dir / "mask.png"
+                        mask_uint8 = mask.astype(np.uint8) * 255
+                        success = cv2.imwrite(str(mask_path), mask_uint8)
+                        if not success:
+                            print(f"  ⚠️ 마스크 {i} 저장 실패: {mask_path}")
 
-                    # 시각화 (마스크 오버레이) 저장
-                    vis_path = frame_dir / "visualization.png"
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    overlay = frame_rgb.copy()
-                    overlay[mask > 0] = [0, 255, 0]
-                    result = cv2.addWeighted(frame_rgb, 0.6, overlay, 0.4, 0)
+                        # 시각화 (마스크 오버레이) 저장
+                        vis_path = frame_dir / "visualization.png"
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        overlay = frame_rgb.copy()
+                        overlay[mask > 0] = [0, 255, 0]
+                        result = cv2.addWeighted(frame_rgb, 0.6, overlay, 0.4, 0)
 
-                    # Annotation points 표시
-                    for px, py in self.annotations['foreground']:
-                        cv2.circle(result, (px, py), 5, (0, 255, 0), -1)
-                        cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
-                    for px, py in self.annotations['background']:
-                        cv2.circle(result, (px, py), 5, (255, 0, 0), -1)
-                        cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
+                        # Annotation points 표시
+                        for px, py in self.annotations['foreground']:
+                            cv2.circle(result, (px, py), 5, (0, 255, 0), -1)
+                            cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
+                        for px, py in self.annotations['background']:
+                            cv2.circle(result, (px, py), 5, (255, 0, 0), -1)
+                            cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
 
-                    result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(str(vis_path), result_bgr)
+                        result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+                        success = cv2.imwrite(str(vis_path), result_bgr)
+                        if not success:
+                            print(f"  ⚠️ 시각화 {i} 저장 실패: {vis_path}")
 
-                    saved_masks += 1
+                        saved_masks += 1
 
-                    # 프레임 메타데이터
-                    mask_area = np.sum(mask > 0)
-                    metadata["frame_info"].append({
-                        "frame_idx": i,
-                        "has_mask": True,
-                        "mask_area": int(mask_area),
-                        "mask_percentage": float(mask_area / mask.size * 100)
-                    })
+                        # 프레임 메타데이터
+                        mask_area = np.sum(mask > 0)
+                        metadata["frame_info"].append({
+                            "frame_idx": i,
+                            "has_mask": True,
+                            "mask_area": int(mask_area),
+                            "mask_percentage": float(mask_area / mask.size * 100)
+                        })
+                    except Exception as e:
+                        print(f"  ❌ 마스크 {i} 처리 오류: {str(e)}")
+                        raise
                 else:
                     metadata["frame_info"].append({
                         "frame_idx": i,
                         "has_mask": False
                     })
 
+            print(f"✓ 프레임별 저장 완료: 총 {len(self.frames)}개, 마스크 {saved_masks}개")
+
             # 3. Metadata JSON 저장
+            print("\n🔹 Step 3: 메타데이터 JSON 저장 중...")
             metadata_path = output_dir / "session_metadata.json"
-            with open(metadata_path, 'w') as f:
-                json.dump(metadata, f, indent=2)
+            try:
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                print(f"✓ 메타데이터 저장 완료: {metadata_path}")
+            except Exception as e:
+                print(f"❌ 메타데이터 저장 오류: {str(e)}")
+                raise
+
+            print("\n" + "="*80)
+            print("✅ save_annotation_session() 완료!")
+            print("="*80 + "\n")
 
             return f"""
 ### Annotation 세션 저장 완료 ✅
@@ -953,7 +997,16 @@ meshlab {output_path}
 
         except Exception as e:
             import traceback
-            return f"저장 오류: {str(e)}\n\n```\n{traceback.format_exc()}\n```"
+            error_detail = traceback.format_exc()
+            print("\n" + "="*80)
+            print("❌ save_annotation_session() 실패!")
+            print("="*80)
+            print(f"오류 타입: {type(e).__name__}")
+            print(f"오류 메시지: {str(e)}")
+            print("\n전체 스택 트레이스:")
+            print(error_detail)
+            print("="*80 + "\n")
+            return f"저장 오류: {str(e)}\n\n```\n{error_detail}\n```"
 
     def load_annotation_session(self, session_id: str) -> Tuple[np.ndarray, str]:
         """
