@@ -2,10 +2,91 @@
 
 ## 📋 목차
 
-1. [Git LFS 요구사항](#git-lfs-요구사항)
-2. [서버 환경별 배포 방법](#서버-환경별-배포-방법)
-3. [SAM 3D 체크포인트 다운로드](#sam-3d-체크포인트-다운로드)
-4. [Git Repository 관리](#git-repository-관리)
+1. [체크포인트 관리](#체크포인트-관리)
+2. [Git LFS 요구사항](#git-lfs-요구사항)
+3. [서버 환경별 배포 방법](#서버-환경별-배포-방법)
+4. [SAM 3D 체크포인트 다운로드](#sam-3d-체크포인트-다운로드)
+5. [Git Repository 관리](#git-repository-관리)
+
+---
+
+## 체크포인트 관리
+
+### 📋 개요
+
+SAM 3D GUI는 두 가지 SAM 모델을 사용합니다:
+- **SAM 2**: Interactive point annotation (foreground/background 세그멘테이션)
+- **SAM 3D**: 3D mesh 생성
+
+모든 체크포인트 경로는 `config/model_config.yaml`에서 중앙 관리됩니다.
+
+### 🗂️ 체크포인트 위치
+
+**현재 설정 (config/model_config.yaml)**
+
+```yaml
+sam2:
+  checkpoint: ~/dev/segment-anything-2/checkpoints/sam2.1_hiera_large.pt
+  config: "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+sam3d:
+  checkpoint_dir: ~/dev/sam3d_gui/external/sam-3d-objects/checkpoints/hf
+  checkpoint_dir_alt: ~/dev/sam-3d-objects/checkpoints/hf
+```
+
+### ✅ 체크포인트 상태
+
+#### SAM 2 (Interactive Segmentation)
+- **위치**: `/home/joon/dev/segment-anything-2/checkpoints/sam2.1_hiera_large.pt`
+- **상태**: ✅ 다운로드 완료
+- **용량**: ~2.4GB
+- **용도**: Point annotation, foreground/background 분리
+
+#### SAM 3D (3D Reconstruction)
+- **위치**: `/home/joon/dev/sam-3d-objects/checkpoints/hf/`
+- **상태**: ❌ **다운로드 필요**
+- **용량**: 약 5-10GB
+- **용도**: 3D mesh 생성 (PLY 파일)
+
+### 🔧 경로 변경 방법
+
+모든 경로는 `config/model_config.yaml`에서 관리됩니다:
+
+```yaml
+sam2:
+  checkpoint: "${oc.env:HOME}/dev/segment-anything-2/checkpoints/sam2.1_hiera_large.pt"
+  # 경로 변경 시 이 줄만 수정
+
+sam3d:
+  checkpoint_dir: "${oc.env:HOME}/dev/sam3d_gui/external/sam-3d-objects/checkpoints/hf"
+  # 경로 변경 시 이 줄만 수정
+```
+
+**환경 변수 활용**: `${oc.env:HOME}`은 자동으로 `/home/joon`으로 확장됩니다.
+
+### 📂 권장 디렉토리 구조
+
+```
+/home/joon/dev/
+├── sam3d_gui/                      # 이 프로젝트
+│   ├── config/
+│   │   └── model_config.yaml       # 체크포인트 경로 설정
+│   ├── external/
+│   │   └── sam-3d-objects/         # Git submodule (옵션)
+│   │       └── checkpoints/hf/
+│   └── src/
+│       ├── web_app.py
+│       └── config_loader.py
+│
+├── segment-anything-2/              # SAM 2 레포지토리
+│   └── checkpoints/
+│       └── sam2.1_hiera_large.pt    # ✅ 존재
+│
+└── sam-3d-objects/                  # SAM 3D standalone (대체 경로)
+    └── checkpoints/hf/
+        ├── pipeline.yaml            # ❌ 다운로드 필요
+        └── ... (model files)
+```
 
 ---
 
