@@ -29,9 +29,11 @@ SAM2_PATH = Path.home() / 'dev/segment-anything-2'
 if SAM2_PATH.exists():
     sys.path.insert(0, str(SAM2_PATH))
     from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.sam2_video_predictor import SAM2VideoPredictor
     SAM2_AVAILABLE = True
 else:
     SAM2ImagePredictor = None
+    SAM2VideoPredictor = None
     SAM2_AVAILABLE = False
     print("Warning: SAM 2 not found. Interactive segmentation will use fallback method.")
 
@@ -60,6 +62,8 @@ class SAMInteractiveWebApp:
 
         # SAM2 predictor 초기화 (Interactive Mode용)
         self.sam2_predictor = None
+        self.sam2_video_predictor = None
+        self.sam2_device = None
         if SAM2_AVAILABLE and config:
             try:
                 print("Loading SAM 2 for interactive segmentation...")
@@ -80,11 +84,20 @@ class SAMInteractiveWebApp:
                     device = "cpu"
                     print("Warning: CUDA not available, using CPU")
 
+                self.sam2_device = device
+
                 if checkpoint.exists():
-                    from sam2.build_sam import build_sam2
+                    from sam2.build_sam import build_sam2, build_sam2_video_predictor
+
+                    # Image predictor for single-frame segmentation
                     sam2_model = build_sam2(model_cfg, str(checkpoint), device=device)
                     self.sam2_predictor = SAM2ImagePredictor(sam2_model)
+
+                    # Video predictor for memory-based tracking
+                    self.sam2_video_predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
+
                     print(f"✓ SAM 2 loaded: {config.cfg.sam2.name} on {device}")
+                    print(f"✓ SAM 2 Video Predictor initialized for propagation")
                 else:
                     print(f"Warning: SAM 2 checkpoint not found at {checkpoint}")
             except Exception as e:
@@ -92,6 +105,7 @@ class SAMInteractiveWebApp:
                 import traceback
                 traceback.print_exc()
                 self.sam2_predictor = None
+                self.sam2_video_predictor = None
 
         # 상태 관리
         self.video_path = None
@@ -473,9 +487,10 @@ class SAMInteractiveWebApp:
     def propagate_to_all_frames(self, progress=gr.Progress()) -> Tuple[np.ndarray, str]:
         """
         현재 프레임의 annotation을 전체 비디오에 propagation (tracking)
-        SAM2를 사용하여 각 프레임에 동일한 annotation 적용
+        SAM 2 Video Predictor를 사용한 메모리 기반 추적
 
-        주의: segment_current_frame 없이 바로 propagate 가능
+        중요: 고정 points를 모든 프레임에 재적용하지 않음!
+        대신 SAM 2의 memory mechanism을 사용하여 자동으로 객체 추적
         """
         if len(self.frames) == 0:
             return None, "먼저 비디오를 로드하세요"
@@ -484,48 +499,123 @@ class SAMInteractiveWebApp:
             return None, "Annotation points가 필요합니다 (최소 1개의 foreground point)"
 
         try:
-            progress(0, desc="전체 프레임 tracking (SAM2)...")
+            progress(0, desc="비디오 tracking 초기화 (SAM 2 Video Predictor)...")
 
-            # SAM2를 사용하여 각 프레임 세그멘테이션
-            for i, frame in enumerate(self.frames):
-                if self.masks[i] is None:  # 이미 annotation된 프레임은 건너뛰기
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # SAM 2 Video Predictor 사용 (메모리 기반 추적)
+            if self.sam2_video_predictor is not None:
+                # 1. 임시 디렉토리에 프레임 저장 (SAM 2 Video Predictor는 디렉토리 입력 필요)
+                import tempfile
+                import os
+                temp_dir = tempfile.mkdtemp(prefix="sam3d_video_")
 
-                    if self.sam2_predictor is not None:
-                        # SAM2 사용
-                        self.sam2_predictor.set_image(frame_rgb)
+                try:
+                    progress(0.05, desc="프레임 저장 중...")
+                    for i, frame in enumerate(self.frames):
+                        frame_path = os.path.join(temp_dir, f"{i:05d}.jpg")
+                        cv2.imwrite(frame_path, frame)
 
-                        point_coords = []
-                        point_labels = []
+                    progress(0.1, desc="SAM 2 Video Predictor 초기화 중...")
 
-                        for px, py in self.annotations['foreground']:
-                            point_coords.append([px, py])
-                            point_labels.append(1)
+                    # 2. Inference state 초기화
+                    inference_state = self.sam2_video_predictor.init_state(video_path=temp_dir)
 
-                        for px, py in self.annotations['background']:
-                            point_coords.append([px, py])
-                            point_labels.append(0)
+                    # 3. 현재 프레임에만 annotation points 추가 (conditioning frame)
+                    point_coords = []
+                    point_labels = []
 
-                        point_coords = np.array(point_coords, dtype=np.float32)
-                        point_labels = np.array(point_labels, dtype=np.int32)
+                    for px, py in self.annotations['foreground']:
+                        point_coords.append([px, py])
+                        point_labels.append(1)
 
-                        masks, scores, _ = self.sam2_predictor.predict(
-                            point_coords=point_coords,
-                            point_labels=point_labels,
-                            multimask_output=True
-                        )
+                    for px, py in self.annotations['background']:
+                        point_coords.append([px, py])
+                        point_labels.append(0)
 
-                        best_idx = np.argmax(scores)
-                        mask = masks[best_idx]
-                    else:
-                        # Fallback
-                        mask = self.processor.segment_object_interactive(frame, method='contour')
+                    point_coords = np.array(point_coords, dtype=np.float32)
+                    point_labels = np.array(point_labels, dtype=np.int32)
 
-                    self.masks[i] = mask
+                    progress(0.15, desc=f"초기 프레임 ({self.current_frame_idx}) annotation 중...")
 
-                progress((i + 1) / len(self.frames), desc=f"Tracking... {i+1}/{len(self.frames)}")
+                    # 현재 프레임을 conditioning frame으로 설정
+                    _, out_obj_ids, out_mask_logits = self.sam2_video_predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=self.current_frame_idx,
+                        obj_id=1,  # Single object tracking
+                        points=point_coords,
+                        labels=point_labels,
+                    )
 
-            # 현재 프레임 시각화 (마지막 아님)
+                    progress(0.2, desc="메모리 기반 전파 시작...")
+
+                    # 4. Propagate using memory-based tracking (NO points on other frames!)
+                    video_segments = {}
+                    for frame_idx, obj_ids, mask_logits in self.sam2_video_predictor.propagate_in_video(
+                        inference_state,
+                        start_frame_idx=self.current_frame_idx
+                    ):
+                        # Memory-based tracking - 각 프레임은 이전 프레임의 메모리를 사용
+                        # Points는 재적용되지 않음!
+                        video_segments[frame_idx] = (mask_logits[0] > 0.0).cpu().numpy()
+
+                        progress_pct = 0.2 + 0.6 * (frame_idx + 1) / len(self.frames)
+                        progress(progress_pct, desc=f"Tracking... {frame_idx+1}/{len(self.frames)}")
+
+                    # 5. 결과를 self.masks에 저장
+                    self.masks = [None] * len(self.frames)
+                    for frame_idx, mask in video_segments.items():
+                        if frame_idx < len(self.masks):
+                            self.masks[frame_idx] = mask.squeeze()
+
+                    progress(0.9, desc="Tracking 완료, 결과 처리 중...")
+
+                finally:
+                    # 임시 디렉토리 정리
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+
+            else:
+                # Fallback: Image predictor 사용 (구버전 방식 - 정확도 낮음)
+                progress(0, desc="Fallback: 프레임별 세그멘테이션...")
+
+                for i, frame in enumerate(self.frames):
+                    if self.masks[i] is None:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                        if self.sam2_predictor is not None:
+                            self.sam2_predictor.set_image(frame_rgb)
+
+                            point_coords = []
+                            point_labels = []
+
+                            for px, py in self.annotations['foreground']:
+                                point_coords.append([px, py])
+                                point_labels.append(1)
+
+                            for px, py in self.annotations['background']:
+                                point_coords.append([px, py])
+                                point_labels.append(0)
+
+                            point_coords = np.array(point_coords, dtype=np.float32)
+                            point_labels = np.array(point_labels, dtype=np.int32)
+
+                            masks, scores, _ = self.sam2_predictor.predict(
+                                point_coords=point_coords,
+                                point_labels=point_labels,
+                                multimask_output=True
+                            )
+
+                            best_idx = np.argmax(scores)
+                            mask = masks[best_idx]
+                        else:
+                            mask = self.processor.segment_object_interactive(frame, method='contour')
+
+                        self.masks[i] = mask
+
+                    progress((i + 1) / len(self.frames), desc=f"Processing... {i+1}/{len(self.frames)}")
+
+            progress(1.0, desc="시각화 준비 중...")
+
+            # 현재 프레임 시각화
             self.current_frame_idx = min(self.current_frame_idx, len(self.frames) - 1)
             current_frame = self.frames[self.current_frame_idx]
             current_mask = self.masks[self.current_frame_idx]
@@ -539,12 +629,20 @@ class SAMInteractiveWebApp:
             # 통계
             tracked_frames = sum(1 for m in self.masks if m is not None)
 
+            method_used = "SAM 2 Video Predictor (Memory-based)" if self.sam2_video_predictor else "SAM 2 Image (Fallback)"
+
             status = f"""
 ### Propagation 완료 ✅
 
-- **Method**: SAM2 (전체 프레임)
+- **Method**: {method_used}
 - **Tracked 프레임**: {tracked_frames} / {len(self.frames)}
 - **현재 프레임**: {self.current_frame_idx + 1} / {len(self.frames)}
+- **Conditioning Frame**: {self.current_frame_idx} (Points만 여기 적용)
+
+### 메모리 기반 추적:
+- 현재 프레임의 points만 사용
+- 다른 프레임은 메모리로 자동 추적
+- 객체 이동에도 정확한 마스크 생성
 
 ### 다음:
 - **프레임 네비게이션**으로 결과 확인
@@ -1073,6 +1171,115 @@ meshlab {output_path}
 
         return result, status
 
+    def export_frames_and_masks(self, output_dir: str = None, progress=gr.Progress()) -> str:
+        """
+        프레임별로 원본 이미지와 마스크를 별도 폴더에 저장
+
+        Args:
+            output_dir: 출력 디렉토리 (None이면 자동 생성)
+
+        Returns:
+            상태 메시지
+        """
+        if len(self.frames) == 0:
+            return "❌ 비디오가 로드되지 않았습니다"
+
+        if all(m is None for m in self.masks):
+            return "❌ 마스크가 없습니다. 먼저 Segment 또는 Propagate를 실행하세요"
+
+        try:
+            progress(0, desc="저장 준비 중...")
+
+            # 출력 디렉토리 설정
+            if output_dir is None:
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_dir = Path(self.config.output_dir if self.config else "outputs") / f"frames_export_{timestamp}"
+            else:
+                output_dir = Path(output_dir)
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 서브디렉토리 생성
+            images_dir = output_dir / "images"
+            masks_dir = output_dir / "masks"
+            overlays_dir = output_dir / "overlays"
+
+            images_dir.mkdir(exist_ok=True)
+            masks_dir.mkdir(exist_ok=True)
+            overlays_dir.mkdir(exist_ok=True)
+
+            progress(0.1, desc="프레임 저장 중...")
+
+            saved_count = 0
+            for i, frame in enumerate(self.frames):
+                # 원본 이미지 저장
+                image_path = images_dir / f"frame_{i:05d}.png"
+                cv2.imwrite(str(image_path), frame)
+
+                # 마스크 저장 (있을 경우)
+                if self.masks[i] is not None:
+                    mask = self.masks[i]
+                    mask_path = masks_dir / f"frame_{i:05d}.png"
+                    mask_uint8 = (mask * 255).astype(np.uint8)
+                    cv2.imwrite(str(mask_path), mask_uint8)
+
+                    # 오버레이 저장 (시각화)
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    overlay = frame_rgb.copy()
+                    overlay[mask > 0] = [0, 255, 0]
+                    result = cv2.addWeighted(frame_rgb, 0.6, overlay, 0.4, 0)
+                    result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+
+                    overlay_path = overlays_dir / f"frame_{i:05d}.png"
+                    cv2.imwrite(str(overlay_path), result_bgr)
+
+                    saved_count += 1
+
+                progress((i + 1) / len(self.frames), desc=f"저장 중... {i+1}/{len(self.frames)}")
+
+            # 메타데이터 저장
+            metadata = {
+                "video_path": str(self.video_path) if self.video_path else None,
+                "total_frames": len(self.frames),
+                "frames_with_masks": saved_count,
+                "annotations": {
+                    "foreground": self.annotations['foreground'],
+                    "background": self.annotations['background']
+                },
+                "export_date": datetime.now().isoformat()
+            }
+
+            metadata_path = output_dir / "metadata.json"
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+            progress(1.0, desc="저장 완료!")
+
+            return f"""
+### 프레임/마스크 저장 완료 ✅
+
+**저장 위치**: `{output_dir}`
+
+**저장된 파일**:
+- 📁 **images/**: 원본 프레임 {len(self.frames)}개
+- 📁 **masks/**: 마스크 이미지 {saved_count}개
+- 📁 **overlays/**: 시각화 이미지 {saved_count}개
+- 📄 **metadata.json**: 메타데이터
+
+**파일 형식**: PNG (무손실)
+
+**다음 단계**:
+- 이미지 처리 파이프라인에서 사용
+- 학습 데이터셋으로 활용
+- 외부 도구로 추가 분석
+"""
+
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            return f"❌ 저장 실패: {str(e)}\n\n```\n{error_detail}\n```"
+
     def create_interface(self):
         """Gradio 인터페이스 생성 - 통합 버전"""
 
@@ -1195,6 +1402,7 @@ meshlab {output_path}
 
                             mesh_btn = gr.Button("🎲 Generate 3D Mesh")
                             save_masks_btn = gr.Button("💾 Save Masks Only")
+                            export_frames_btn = gr.Button("📤 Export Frames & Masks")
 
                         # 우측: 이미지 & 결과
                         with gr.Column(scale=2):
@@ -1284,6 +1492,11 @@ meshlab {output_path}
 
                     save_masks_btn.click(
                         fn=self.save_masks,
+                        outputs=[status_text]
+                    )
+
+                    export_frames_btn.click(
+                        fn=self.export_frames_and_masks,
                         outputs=[status_text]
                     )
 
