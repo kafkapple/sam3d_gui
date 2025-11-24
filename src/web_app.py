@@ -1272,6 +1272,42 @@ meshlab {output_path}
         else:
             return None, "비디오가 로드되지 않았습니다"
 
+    def _find_next_sequence(self, fauna_root: Path, animal_name: str) -> str:
+        """
+        다음 사용 가능한 시퀀스 번호 찾기
+
+        Args:
+            fauna_root: Fauna 데이터셋 루트 경로
+            animal_name: 동물 이름
+
+        Returns:
+            "seq_XXX" 형식의 시퀀스 이름
+        """
+        train_dir = fauna_root / animal_name / "train"
+
+        # train 디렉토리가 없으면 seq_000부터 시작
+        if not train_dir.exists():
+            return "seq_000"
+
+        # 기존 seq_XXX 디렉토리 찾기
+        existing_sequences = [
+            d.name for d in train_dir.iterdir()
+            if d.is_dir() and d.name.startswith("seq_")
+        ]
+
+        # 기존 시퀀스가 없으면 seq_000
+        if not existing_sequences:
+            return "seq_000"
+
+        # 가장 큰 시퀀스 번호 찾기
+        try:
+            max_seq_num = max([int(s.split("_")[1]) for s in existing_sequences])
+            next_seq_num = max_seq_num + 1
+            return f"seq_{next_seq_num:03d}"
+        except (IndexError, ValueError):
+            # 파싱 실패 시 안전하게 seq_000 반환
+            return "seq_000"
+
     def export_fauna_dataset(
         self,
         animal_name: str = "mouse",
@@ -1281,6 +1317,7 @@ meshlab {output_path}
         """
         Fauna 데이터셋 형식으로 저장
         스마트 샘플링: 전체 비디오에서 target_frames 개만 균등 간격으로 선택
+        자동 시퀀스 번호 할당: 기존 시퀀스를 덮어쓰지 않음
 
         Args:
             animal_name: 동물 이름 (폴더명)
@@ -1300,10 +1337,16 @@ meshlab {output_path}
 
             progress(0, desc="Fauna 데이터셋 준비 중...")
 
-            # 출력 디렉토리 설정
+            # 출력 디렉토리 설정 - 자동으로 다음 시퀀스 번호 찾기
             fauna_root = Path.home() / "dev/3DAnimals/data/fauna/Fauna_dataset/large_scale"
-            output_dir = fauna_root / animal_name / "train" / "seq_000"
+            sequence_name = self._find_next_sequence(fauna_root, animal_name)
+            output_dir = fauna_root / animal_name / "train" / sequence_name
             output_dir.mkdir(parents=True, exist_ok=True)
+
+            print(f"🔹 Fauna 데이터셋 저장:")
+            print(f"   Animal: {animal_name}")
+            print(f"   Sequence: {sequence_name}")
+            print(f"   Path: {output_dir}")
 
             # 스마트 샘플링: target_frames개를 균등 간격으로 선택
             total_frames = len(self.frames)
@@ -1345,7 +1388,7 @@ meshlab {output_path}
             # 메타데이터 생성
             metadata = {
                 "animal_name": animal_name,
-                "sequence": "seq_000",
+                "sequence": sequence_name,
                 "split": "train",
                 "total_frames": saved_count,
                 "original_video_frames": total_frames,
@@ -1368,10 +1411,11 @@ meshlab {output_path}
 ### Fauna 데이터셋 생성 완료 ✅
 
 **저장 위치**: `{output_dir}`
+**시퀀스**: `{sequence_name}` (자동 할당 - 기존 데이터 보존)
 
 **데이터셋 구조**:
 ```
-{animal_name}/train/seq_000/
+{animal_name}/train/{sequence_name}/
 ├── 0000000_rgb.png
 ├── 0000000_mask.png
 ├── 0000001_rgb.png
