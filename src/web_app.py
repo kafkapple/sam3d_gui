@@ -1171,6 +1171,173 @@ meshlab {output_path}
 
         return result, status
 
+    def clear_annotations(self) -> Tuple[np.ndarray, str]:
+        """
+        모든 annotation points와 masks 초기화
+
+        Returns:
+            현재 프레임 이미지, 상태 메시지
+        """
+        # Annotations 초기화
+        self.annotations['foreground'] = []
+        self.annotations['background'] = []
+
+        # Masks 초기화
+        self.masks = [None] * len(self.frames) if self.frames else []
+        self.current_mask = None
+
+        # 현재 프레임 이미지 반환 (annotation 없이)
+        if len(self.frames) > 0:
+            current_frame = self.frames[self.current_frame_idx]
+            frame_rgb = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
+
+            status = """
+### Annotations 초기화 완료 ✅
+
+- 모든 foreground/background points 제거
+- 모든 마스크 초기화
+- 새로 annotation 시작 가능
+
+**다음 단계**: 이미지 클릭하여 새로운 annotation 시작
+"""
+            return frame_rgb, status
+        else:
+            return None, "비디오가 로드되지 않았습니다"
+
+    def export_fauna_dataset(
+        self,
+        animal_name: str = "mouse",
+        target_frames: int = 50,
+        progress=gr.Progress()
+    ) -> str:
+        """
+        Fauna 데이터셋 형식으로 저장
+        스마트 샘플링: 전체 비디오에서 target_frames 개만 균등 간격으로 선택
+
+        Args:
+            animal_name: 동물 이름 (폴더명)
+            target_frames: 저장할 프레임 수 (기본 50개)
+
+        Returns:
+            상태 메시지
+        """
+        if len(self.frames) == 0:
+            return "❌ 비디오가 로드되지 않았습니다"
+
+        if all(m is None for m in self.masks):
+            return "❌ 마스크가 없습니다. 먼저 Propagate를 실행하세요"
+
+        try:
+            from datetime import datetime
+
+            progress(0, desc="Fauna 데이터셋 준비 중...")
+
+            # 출력 디렉토리 설정
+            fauna_root = Path.home() / "dev/3DAnimals/data/fauna/Fauna_dataset/large_scale"
+            output_dir = fauna_root / animal_name / "train" / "seq_000"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 스마트 샘플링: target_frames개를 균등 간격으로 선택
+            total_frames = len(self.frames)
+            if total_frames <= target_frames:
+                # 프레임 수가 적으면 전부 사용
+                selected_indices = list(range(total_frames))
+            else:
+                # 균등 간격으로 샘플링
+                step = total_frames / target_frames
+                selected_indices = [int(i * step) for i in range(target_frames)]
+
+            progress(0.1, desc=f"{len(selected_indices)}개 프레임 선택됨 (전체 {total_frames}개 중)...")
+
+            # 프레임 및 마스크 저장
+            saved_count = 0
+            for idx, frame_idx in enumerate(selected_indices):
+                if self.masks[frame_idx] is None:
+                    continue
+
+                frame = self.frames[frame_idx]
+                mask = self.masks[frame_idx]
+
+                # Fauna 형식: {index:07d}_rgb.png, {index:07d}_mask.png
+                rgb_path = output_dir / f"{idx:07d}_rgb.png"
+                mask_path = output_dir / f"{idx:07d}_mask.png"
+
+                # RGB 저장 (BGR → RGB)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                cv2.imwrite(str(rgb_path), cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+
+                # Mask 저장 (0-255 형식)
+                mask_uint8 = (mask * 255).astype(np.uint8)
+                cv2.imwrite(str(mask_path), mask_uint8)
+
+                saved_count += 1
+                progress(0.1 + 0.8 * (idx + 1) / len(selected_indices),
+                        desc=f"저장 중... {idx+1}/{len(selected_indices)}")
+
+            # 메타데이터 생성
+            metadata = {
+                "animal_name": animal_name,
+                "sequence": "seq_000",
+                "split": "train",
+                "total_frames": saved_count,
+                "original_video_frames": total_frames,
+                "sampling_strategy": "uniform" if total_frames > target_frames else "all",
+                "annotations": {
+                    "foreground_points": len(self.annotations['foreground']),
+                    "background_points": len(self.annotations['background'])
+                },
+                "export_date": datetime.now().isoformat(),
+                "source_video": str(self.video_path) if self.video_path else None
+            }
+
+            metadata_path = output_dir / "metadata.json"
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+            progress(1.0, desc="Fauna 데이터셋 생성 완료!")
+
+            return f"""
+### Fauna 데이터셋 생성 완료 ✅
+
+**저장 위치**: `{output_dir}`
+
+**데이터셋 구조**:
+```
+{animal_name}/train/seq_000/
+├── 0000000_rgb.png
+├── 0000000_mask.png
+├── 0000001_rgb.png
+├── 0000001_mask.png
+...
+├── {saved_count-1:07d}_rgb.png
+├── {saved_count-1:07d}_mask.png
+└── metadata.json
+```
+
+**통계**:
+- 저장된 프레임: {saved_count}개
+- 원본 비디오: {total_frames} 프레임
+- 샘플링: {"균등 간격 " + str(target_frames) + "개" if total_frames > target_frames else "전체 사용"}
+
+**다음 단계**:
+1. 데이터 검증: `ls {output_dir} | head -20`
+2. 3DAnimals 학습 실행
+3. 결과 확인 및 시각화
+
+**Config 설정 예시**:
+```yaml
+dataset:
+  name: {animal_name}
+  path: data/fauna/Fauna_dataset/large_scale/{animal_name}
+  split: train
+```
+"""
+
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            return f"❌ Fauna 데이터셋 생성 실패: {str(e)}\n\n```\n{error_detail}\n```"
+
     def export_frames_and_masks(self, output_dir: str = None, progress=gr.Progress()) -> str:
         """
         프레임별로 원본 이미지와 마스크를 별도 폴더에 저장
@@ -1337,6 +1504,7 @@ meshlab {output_path}
                             )
 
                             clear_btn = gr.Button("🗑️ Points 초기화")
+                            clear_all_btn = gr.Button("🔄 All Annotations 초기화", variant="stop")
                             segment_btn = gr.Button("✂️ Segment Current Frame", variant="secondary")
 
                             gr.Markdown("### 🎬 Propagation")
@@ -1403,6 +1571,24 @@ meshlab {output_path}
                             mesh_btn = gr.Button("🎲 Generate 3D Mesh")
                             save_masks_btn = gr.Button("💾 Save Masks Only")
                             export_frames_btn = gr.Button("📤 Export Frames & Masks")
+
+                            gr.Markdown("### 🦁 Fauna 데이터셋 저장")
+
+                            with gr.Row():
+                                fauna_animal_name = gr.Textbox(
+                                    label="동물 이름",
+                                    value="mouse",
+                                    placeholder="예: mouse, cat, dog"
+                                )
+                                fauna_target_frames = gr.Number(
+                                    label="목표 프레임 수",
+                                    value=50,
+                                    minimum=10,
+                                    maximum=500,
+                                    step=10
+                                )
+
+                            export_fauna_btn = gr.Button("🐾 Fauna 형식으로 저장", variant="primary")
 
                         # 우측: 이미지 & 결과
                         with gr.Column(scale=2):
@@ -1498,6 +1684,17 @@ meshlab {output_path}
                     export_frames_btn.click(
                         fn=self.export_frames_and_masks,
                         outputs=[status_text]
+                    )
+
+                    export_fauna_btn.click(
+                        fn=self.export_fauna_dataset,
+                        inputs=[fauna_animal_name, fauna_target_frames],
+                        outputs=[status_text]
+                    )
+
+                    clear_all_btn.click(
+                        fn=self.clear_annotations,
+                        outputs=[annotated_img, status_text]
                     )
 
                     # 세션 관리 이벤트
