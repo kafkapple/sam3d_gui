@@ -3,13 +3,22 @@
 
 # SAM 2 설정 (Interactive segmentation)
 sam2:
-  name: "SAM 2.1 Hiera Large"
-  checkpoint: "${oc.env:HOME}/dev/segment-anything-2/checkpoints/sam2.1_hiera_large.pt"
-  config: "configs/sam2.1/sam2.1_hiera_l.yaml"
+  name: "SAM 2 Hiera Large"
+  # setup 스크립트가 다운로드한 체크포인트 사용
+  checkpoint: "${oc.env:HOME}/dev/sam3d_gui/checkpoints/sam2/sam2_hiera_large.pt"
+  config: "sam2_hiera_l.yaml"
   device: "auto"  # "auto" (GPU 자동 감지), "cuda", "cpu"
   # RTX 3060 및 A6000에서 사용 가능
 
+  # Note: SAM 2.0 Hiera Large 사용
+  # setup_system_cuda.sh에서 자동 다운로드됨
+
   # Alternative models (commented out)
+  # SAM 2.1 (별도 다운로드 필요):
+  # checkpoint: "${oc.env:HOME}/dev/segment-anything-2/checkpoints/sam2.1_hiera_large.pt"
+  # config: "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+  # SAM 2.1 Base+ (경량 모델):
   # checkpoint: "${oc.env:HOME}/dev/segment-anything-2/checkpoints/sam2.1_hiera_base_plus.pt"
   # config: "configs/sam2.1/sam2.1_hiera_b+.yaml"
 
