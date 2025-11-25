@@ -154,6 +154,95 @@ class SAMInteractiveWebApp:
                 print(f"Warning: Failed to initialize Lite Annotator: {e}")
                 self.lite_annotator = None
 
+    def unload_sam2_models(self):
+        """
+        Unload SAM2 models to free GPU memory before SAM 3D inference
+
+        This is critical for RTX 3060 12GB where:
+        - SAM2 Large uses ~2-3GB
+        - SAM3D uses ~8-10GB
+        - Total 11-13GB > 12GB available
+
+        By unloading SAM2 before SAM3D, we free ~3GB for SAM3D inference.
+        """
+        import gc
+
+        if self.sam2_predictor is not None or self.sam2_video_predictor is not None:
+            print("\n🧹 SAM2 모델 언로드 시작 (메모리 확보)...")
+
+            # Print memory before cleanup
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated(0) / 1024**3
+                print(f"   현재 GPU 메모리: {allocated:.2f} GB")
+
+            # Delete SAM2 image predictor
+            if self.sam2_predictor is not None:
+                del self.sam2_predictor
+                self.sam2_predictor = None
+                print("   ✓ SAM2 Image Predictor 해제")
+
+            # Delete SAM2 video predictor
+            if self.sam2_video_predictor is not None:
+                del self.sam2_video_predictor
+                self.sam2_video_predictor = None
+                print("   ✓ SAM2 Video Predictor 해제")
+
+            # Force garbage collection
+            gc.collect()
+
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                print("   ✓ CUDA 캐시 정리 완료")
+
+                # Print memory after cleanup
+                allocated_after = torch.cuda.memory_allocated(0) / 1024**3
+                freed = allocated - allocated_after
+                print(f"   ✓ GPU 메모리 해제: {freed:.2f} GB")
+                print(f"   현재 GPU 메모리: {allocated_after:.2f} GB")
+
+            print("✅ SAM2 모델 언로드 완료\n")
+        else:
+            print("ℹ️  SAM2 모델이 이미 언로드되어 있습니다.")
+
+    def reload_sam2_models(self):
+        """
+        Reload SAM2 models after SAM 3D inference completes
+
+        This allows users to continue using interactive segmentation after 3D reconstruction.
+        """
+        if not SAM2_AVAILABLE or not self.config:
+            print("⚠️  SAM2를 다시 로드할 수 없습니다 (SAM2 unavailable or no config)")
+            return
+
+        if self.sam2_predictor is not None and self.sam2_video_predictor is not None:
+            print("ℹ️  SAM2 모델이 이미 로드되어 있습니다.")
+            return
+
+        print("\n🔄 SAM2 모델 재로드 중...")
+
+        try:
+            checkpoint = Path(self.config.sam2_checkpoint)
+            model_cfg = self.config.sam2_config
+            device = self.sam2_device
+
+            if checkpoint.exists():
+                from sam2.build_sam import build_sam2, build_sam2_video_predictor
+
+                # Rebuild models
+                sam2_model = build_sam2(model_cfg, str(checkpoint), device=device)
+                self.sam2_predictor = SAM2ImagePredictor(sam2_model)
+                self.sam2_video_predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
+
+                print(f"✅ SAM2 모델 재로드 완료 (device: {device})\n")
+            else:
+                print(f"❌ SAM2 checkpoint를 찾을 수 없습니다: {checkpoint}")
+        except Exception as e:
+            print(f"❌ SAM2 재로드 실패: {e}")
+            import traceback
+            traceback.print_exc()
+
     def quick_process(self, data_dir: str, video_file: str,
                      start_time: float, duration: float,
                      motion_threshold: float, segmentation_method: str,
@@ -1733,6 +1822,10 @@ git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
             print("\n✓ 3D 재구성 시작...")
             progress(0.5, desc="SAM 3D 재구성 중...")
 
+            # Unload SAM2 models to free GPU memory for SAM 3D
+            # Critical for RTX 3060 12GB: SAM2 (3GB) + SAM3D (10GB) = 13GB > 12GB
+            self.unload_sam2_models()
+
             try:
                 reconstruction = self.processor.reconstruct_3d(frame, mask)
                 print(f"✓ Reconstruction 완료: {type(reconstruction)}")
@@ -1764,9 +1857,17 @@ meshlab {output_path}
 또는 온라인: https://3dviewer.net/
 """
                     print("✅ generate_3d_mesh() 완료")
+
+                    # Reload SAM2 models for continued use
+                    self.reload_sam2_models()
+
                     return str(output_path), status
                 else:
                     print("❌ Reconstruction이 None")
+
+                    # Reload SAM2 models even on failure
+                    self.reload_sam2_models()
+
                     return None, "3D 재구성 실패 (SAM 3D 체크포인트 필요)"
 
             except Exception as e:
@@ -1774,6 +1875,10 @@ meshlab {output_path}
                 print(f"❌ 3D 재구성 실패: {e}")
                 import traceback
                 traceback.print_exc()
+
+                # Reload SAM2 models even on failure
+                self.reload_sam2_models()
+
                 return None, f"3D 재구성 실패: {str(e)}\n\nSAM 3D 체크포인트가 필요합니다."
 
         except Exception as e:
