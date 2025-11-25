@@ -60,7 +60,16 @@ echo ""
 
 # 5. SAM2 체크포인트 확인
 echo "[5/5] SAM2 체크포인트 확인..."
-SAM2_CHECKPOINT="$HOME/dev/sam3d_gui/checkpoints/sam2/sam2_hiera_large.pt"
+# 프로젝트 루트 자동 감지 (dev 폴더 있거나 없거나)
+if [ -d "$HOME/dev/sam3d_gui" ]; then
+    PROJECT_ROOT="$HOME/dev/sam3d_gui"
+elif [ -d "$HOME/sam3d_gui" ]; then
+    PROJECT_ROOT="$HOME/sam3d_gui"
+else
+    PROJECT_ROOT="$(pwd)"
+fi
+
+SAM2_CHECKPOINT="$PROJECT_ROOT/external/sam2/checkpoints/sam2_hiera_large.pt"
 if [ -f "$SAM2_CHECKPOINT" ]; then
     SIZE=$(du -h "$SAM2_CHECKPOINT" | cut -f1)
     echo "✅ SAM2 체크포인트 발견: $SIZE"

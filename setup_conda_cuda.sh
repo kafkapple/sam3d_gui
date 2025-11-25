@@ -293,8 +293,8 @@ echo "============================================="
 CHECKPOINT_DIR="$PROJECT_ROOT/checkpoints"
 mkdir -p "$CHECKPOINT_DIR"
 
-# SAM2 체크포인트
-SAM2_DIR="$CHECKPOINT_DIR/sam2"
+# SAM2 체크포인트 (external/ 디렉토리로 통합)
+SAM2_DIR="$PROJECT_ROOT/external/sam2/checkpoints"
 mkdir -p "$SAM2_DIR"
 
 if [ -f "$SAM2_DIR/sam2_hiera_large.pt" ]; then
