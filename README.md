@@ -89,7 +89,7 @@ sam3d_gui/                          # Your main project (manage this only!)
 
 - **Conda** (Miniconda or Anaconda) - [Install Guide](https://docs.conda.io/en/latest/miniconda.html)
 - **Git** - `sudo apt install git`
-- **CUDA** (optional, for GPU acceleration) - Recommended for 3D reconstruction
+- **CUDA 11.8** - Required for GPU acceleration and 3D reconstruction
 
 ### Method 1: Automated Setup (Recommended) ⭐
 
@@ -101,61 +101,47 @@ cd /home/joon/dev/sam3d_gui
 ```
 
 **What it does**:
-1. ✅ Creates isolated Conda environment `sam3d_gui`
-2. ✅ Installs all dependencies (PyTorch, OpenCV, etc.)
-3. ✅ Sets up `sam-3d-objects` as Git submodule in `external/`
-4. ✅ Configures paths automatically
-5. ✅ Creates output directories
+1. ✅ Creates isolated Conda environment `sam3d_gui` (Python 3.10)
+2. ✅ Installs PyTorch 2.0.0 + CUDA 11.8
+3. ✅ Compiles Kaolin 0.17.0, pytorch3d 0.7.7, gsplat
+4. ✅ Installs SAM 3D dependencies (20+ packages)
+5. ✅ Downloads SAM2 checkpoint automatically
+6. ✅ Configures paths with project-root relative paths
+7. ✅ Supports multiple GPU architectures (A6000 + RTX 3060)
 
-**Time**: 5-10 minutes (one-time setup)
+**Time**: 20-30 minutes (one-time setup, includes compilation)
 
-### Method 2: Manual Installation
+### Method 2: SAM 3D Checkpoint Download
 
-If you prefer manual control:
+After running `setup.sh`, download SAM 3D checkpoints:
 
 ```bash
 cd /home/joon/dev/sam3d_gui
+./download_sam3d.sh
+```
 
-# Step 1: Create Conda environment
-conda env create -f environment.yml
+**What it downloads**:
+- SAM 3D Object model checkpoints (~5-10 GB)
+- Stores in `external/sam-3d-objects/checkpoints/hf/`
+- Requires Git LFS (script handles installation)
 
-# Step 2: Activate environment
+### Method 3: Verify Installation
+
+Check if everything is set up correctly:
+
+```bash
 conda activate sam3d_gui
 
-# Step 3: Setup Git submodule (optional)
-git submodule add https://github.com/facebookresearch/sam-3d-objects.git external/sam-3d-objects
-git submodule update --init --recursive
+# Check CUDA
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
-# Step 4: Create directories
-mkdir -p outputs configs logs
+# Check PyTorch version
+python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+
+# Expected output:
+# CUDA: True
+# PyTorch: 2.0.0+cu118
 ```
-
-### Method 3: Minimal Setup (No Conda)
-
-If you already have Python packages installed:
-
-```bash
-cd /home/joon/dev/sam3d_gui
-
-# Install only missing packages
-pip install -r requirements.txt
-
-# Run directly
-python src/gui_app.py
-```
-
-### Existing `sam-3d-objects` Folder?
-
-**Good news**: The code automatically detects both locations!
-
-If you already have `/home/joon/dev/sam-3d-objects/`:
-- ✅ **Nothing to do!** Code will use it automatically
-- ✅ `external/` can stay empty
-- ✅ Optionally run `./setup.sh` to convert to submodule
-
-**Detection order**:
-1. `sam3d_gui/external/sam-3d-objects/` (submodule) - checked first
-2. `/home/joon/dev/sam-3d-objects/` (standalone) - fallback
 
 ---
 
@@ -1144,7 +1130,7 @@ cloudcompare outputs/reconstruction.ply   # CloudCompare
 ---
 
 **Status**: ✅ Complete and ready to use
-**Version**: 2.0 (Conda + Git Submodule)
-**Last Updated**: 2025-11-22
+**Version**: 2.3 (Unified Setup + Memory Optimization)
+**Last Updated**: 2025-11-25
 
 **Happy 3D Segmentation!** 🎉

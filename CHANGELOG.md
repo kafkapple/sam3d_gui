@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2025-11-25
+
+### Added
+- **Memory Optimization System**: Comprehensive GPU memory management for SAM 3D
+  - Lazy loading: Models load only when needed (src/sam3d_processor.py:89-155)
+  - Explicit cleanup: `cleanup_model()` with garbage collection (src/sam3d_processor.py:157-185)
+  - Memory monitoring: Real-time VRAM tracking with `get_memory_status()` (src/sam3d_processor.py:187-223)
+  - FP16 mixed precision: Optional half-precision inference (src/sam3d_processor.py:64-87, 462-469)
+  - Auto cleanup: `cleanup_after` parameter for automatic memory management
+  - Documentation: Comprehensive memory optimization guide (docs/SAM3D_MEMORY_OPTIMIZATION.md)
+
+- **Unified Setup System**: Single integrated setup script
+  - `setup.sh`: All-in-one environment setup (180 lines)
+  - Python 3.10 + PyTorch 2.0.0 + CUDA 11.8 installation
+  - Automatic compilation of Kaolin 0.17.0, pytorch3d 0.7.7, gsplat
+  - SAM 3D dependencies installation (20+ packages)
+  - Automatic SAM2 checkpoint download
+  - Multi-GPU architecture support (CUDA arch 8.0, 8.6 for A6000 + RTX 3060)
+
+- **Relative Path System**: Project-root based path management
+  - All scripts use `SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"`
+  - Portable across different servers and user environments
+  - No hardcoded absolute paths
+  - Automatic config file updates
+
+- **Project Cleanup**: Consolidated file structure
+  - Moved 8 deprecated files to `deprecated/` folder
+  - Single source of truth for setup (3 scripts → 1)
+  - Unified environment configuration
+  - Clear documentation of changes (PROJECT_CLEANUP_SUMMARY.md)
+
+### Changed
+- **SAM 3D Integration**: Complete PyTorch 2.0 compatibility
+  - Patched `torch.nn.attention` imports (3 files)
+  - Lightning made optional for inference-only mode
+  - Version detection with automatic fallback to compatible backends
+  - 20+ missing dependencies installed
+
+- **Setup Process**: Dramatically simplified
+  - Before: 5-6 manual steps, multiple scripts
+  - After: 2 steps (`./setup.sh`, `./run.sh`)
+  - Installation time: 20-30 minutes (one-time)
+  - Automatic dependency resolution
+
+- **Checkpoint Management**: Fixed directory structure
+  - Corrected nested directory issue (hf/checkpoints/ → hf/)
+  - Automatic download integration in setup.sh
+  - Separate script for SAM 3D checkpoints (download_sam3d.sh)
+
+### Fixed
+- SAM 3D PyTorch 2.0 compatibility issues
+  - `torch.nn.attention` module not found (3 files patched)
+  - Lightning dependency conflict (made optional)
+  - Missing 20+ package dependencies
+- Checkpoint directory structure (duplicate nesting)
+- Augmentation session scanner (batch vs interactive sessions)
+- Memory management for 12GB GPUs (optimization implemented)
+- Hardcoded absolute paths (converted to relative)
+
+### Documentation
+- `docs/reports/251125_sam3d_integration_fixes.md`: Complete technical report
+- `docs/SAM3D_MEMORY_OPTIMIZATION.md`: Memory optimization guide
+- `PROJECT_CLEANUP_SUMMARY.md`: Project reorganization summary
+- Obsidian research note: Consolidated learning and action items
+
+### Technical Details
+- Minimum VRAM requirement: 16GB (for full SAM 3D pipeline)
+- RTX 3060 12GB: Works with optimization, may OOM on full pipeline
+- A6000 compatibility: Tested and verified with CUDA arch 8.0
+- PyTorch 2.0.0+cu118 maintained (Kaolin requirement)
+
 ## [2.2.0] - 2025-11-24
 
 ### Added
@@ -137,11 +208,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **2.3.0** (2025-11-25): SAM 3D integration, memory optimization, project cleanup
 - **2.2.0** (2025-11-24): Session management and frame navigation
 - **2.1.0** (2025-11-24): Configuration system and checkpoint management
 - **2.0.0** (2025-11-22): Initial release with interactive segmentation and 3D reconstruction
 
 ---
 
-**최종 업데이트**: 2025-11-24
-**문서 버전**: 1.0
+**최종 업데이트**: 2025-11-25
+**문서 버전**: 2.3
