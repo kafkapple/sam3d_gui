@@ -8,12 +8,40 @@ echo ""
 
 # .env 파일에서 HuggingFace 토큰 로드
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# .env 파일 확인 및 자동 생성 제안
+if [ ! -f "$SCRIPT_DIR/.env" ]; then
+    echo "⚠️  .env 파일을 찾을 수 없습니다."
+
+    if [ -f "$SCRIPT_DIR/.env.example" ]; then
+        echo ""
+        echo "📋 .env.example을 .env로 복사하시겠습니까?"
+        echo "   (이후 수동으로 HF_TOKEN을 편집해야 합니다)"
+        read -p "> (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+            echo "✓ .env 파일 생성됨: $SCRIPT_DIR/.env"
+            echo "⚠️  다음 명령으로 HF_TOKEN을 설정하세요:"
+            echo "   nano $SCRIPT_DIR/.env"
+            echo "   또는"
+            echo "   echo 'HF_TOKEN=your_actual_token' >> $SCRIPT_DIR/.env"
+            echo ""
+            echo "설정 후 다시 실행하세요: ./download_sam3d.sh"
+            exit 0
+        fi
+    else
+        echo "   .env.example도 없습니다. 수동으로 생성하세요:"
+        echo "   echo 'HF_TOKEN=your_token_here' > $SCRIPT_DIR/.env"
+        echo ""
+    fi
+fi
+
+# .env 파일 로드
 if [ -f "$SCRIPT_DIR/.env" ]; then
     echo "✓ .env 파일 로드 중..."
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
-else
-    echo "⚠️  .env 파일을 찾을 수 없습니다."
-    echo "   .env.example을 복사하여 .env를 생성하고 HF_TOKEN을 설정하세요."
+    # 주석과 빈 줄 제외하고 로드
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | grep -v '^$' | xargs)
 fi
 
 # HuggingFace 토큰 확인
@@ -22,7 +50,18 @@ if [ -z "$HF_TOKEN" ]; then
     echo ""
     echo "HuggingFace 토큰이 필요합니다:"
     echo "  1. https://huggingface.co/settings/tokens 에서 토큰 생성"
-    echo "  2. .env 파일에 HF_TOKEN=your_token 추가"
+    echo "  2. .env 파일에 HF_TOKEN=your_actual_token 추가"
+
+    # .env 파일이 있지만 토큰이 비어있는 경우
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        if grep -q "HF_TOKEN=your_token_here" "$SCRIPT_DIR/.env" 2>/dev/null; then
+            echo ""
+            echo "❌ .env 파일에 기본값(your_token_here)이 그대로 있습니다!"
+            echo "   실제 HuggingFace 토큰으로 교체하세요:"
+            echo "   nano $SCRIPT_DIR/.env"
+        fi
+    fi
+
     echo ""
     echo "계속 진행하시겠습니까? (인증 실패 가능) (y/n)"
     read -p "> " -n 1 -r
@@ -30,8 +69,12 @@ if [ -z "$HF_TOKEN" ]; then
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
+elif [ "$HF_TOKEN" = "your_token_here" ]; then
+    echo "❌ HF_TOKEN이 기본값(your_token_here)입니다!"
+    echo "   실제 토큰으로 교체하세요: nano $SCRIPT_DIR/.env"
+    exit 1
 else
-    echo "✓ HuggingFace 토큰 감지됨"
+    echo "✓ HuggingFace 토큰 감지됨 (${HF_TOKEN:0:8}...)"
 fi
 
 # 프로젝트 루트에서 상대 경로로 체크포인트 디렉토리 설정
