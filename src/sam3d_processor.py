@@ -16,7 +16,7 @@ import trimesh
 # Determine SAM3D path (supports both submodule and standalone)
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 SAM3D_SUBMODULE_PATH = PROJECT_ROOT / "external" / "sam-3d-objects"
-SAM3D_STANDALONE_PATH = Path("/home/joon/dev/sam-3d-objects")
+SAM3D_STANDALONE_PATH = Path.home() / "dev" / "sam-3d-objects"
 
 # Use submodule if available, otherwise fall back to standalone
 if SAM3D_SUBMODULE_PATH.exists():

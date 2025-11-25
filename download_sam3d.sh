@@ -34,8 +34,23 @@ else
     echo "✓ HuggingFace 토큰 감지됨"
 fi
 
-# 체크포인트 디렉토리 생성
-CHECKPOINT_DIR="$HOME/dev/sam-3d-objects/checkpoints/hf"
+# 프로젝트 루트에서 상대 경로로 체크포인트 디렉토리 설정
+PROJECT_ROOT="$SCRIPT_DIR"
+SAM3D_SUBMODULE="$PROJECT_ROOT/external/sam-3d-objects"
+
+# Submodule 경로 우선 사용, 없으면 standalone 경로
+if [ -d "$SAM3D_SUBMODULE" ]; then
+    SAM3D_BASE="$SAM3D_SUBMODULE"
+    echo "✓ Using SAM 3D submodule: $SAM3D_BASE"
+else
+    # Fallback: standalone installation
+    SAM3D_BASE="$HOME/dev/sam-3d-objects"
+    echo "⚠️  Submodule not found, using standalone path: $SAM3D_BASE"
+    echo "   Consider running: git submodule update --init --recursive"
+    mkdir -p "$SAM3D_BASE"
+fi
+
+CHECKPOINT_DIR="$SAM3D_BASE/checkpoints/hf"
 mkdir -p "$CHECKPOINT_DIR"
 
 echo "다운로드 위치: $CHECKPOINT_DIR"
@@ -66,7 +81,7 @@ echo ""
 echo "HuggingFace에서 SAM 3D 체크포인트 다운로드 중..."
 echo ""
 
-cd "$HOME/dev/sam-3d-objects"
+cd "$SAM3D_BASE"
 
 # HuggingFace 레포지토리 클론 (토큰 인증 사용)
 if [ ! -d "checkpoints/hf/.git" ]; then
