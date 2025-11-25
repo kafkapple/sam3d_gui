@@ -133,13 +133,36 @@ class SAM3DProcessor:
 
         # Load model with memory optimization
         try:
+            # Set environment variables for FP16 if enabled
+            if self.enable_fp16:
+                os.environ['SAM3D_USE_FP16'] = '1'
+                print(f"   Setting SAM3D_USE_FP16=1 for memory optimization")
+
             self.inference_model = Inference(config_path, compile=False)
+
+            # Convert to FP16 if enabled (reduces memory by ~50%)
+            if self.enable_fp16:
+                print(f"   🔄 Converting model to FP16 (half precision)...")
+                try:
+                    # Convert pipeline model to FP16
+                    if hasattr(self.inference_model, '_pipeline'):
+                        pipeline = self.inference_model._pipeline
+                        if hasattr(pipeline, 'module') and pipeline.module is not None:
+                            pipeline.module.half()
+                            print(f"   ✓ Model converted to FP16")
+                        else:
+                            print(f"   ⚠️  Pipeline module not found, skipping FP16 conversion")
+                except Exception as fp16_error:
+                    print(f"   ⚠️  FP16 conversion failed (using FP32): {fp16_error}")
+                    self.enable_fp16 = False
+
             self._model_loaded = True
 
             # Report memory usage
             if torch.cuda.is_available():
                 final_memory = torch.cuda.memory_allocated() / 1024**3
-                print(f"   ✓ SAM 3D 모델 로드 완료")
+                precision = "FP16" if self.enable_fp16 else "FP32"
+                print(f"   ✓ SAM 3D 모델 로드 완료 ({precision})")
                 print(f"   GPU 메모리 사용: {final_memory:.2f} GB (증가: {final_memory - initial_memory:.2f} GB)")
             else:
                 print(f"   ✓ SAM 3D 모델 로드 완료 (CPU mode)")
