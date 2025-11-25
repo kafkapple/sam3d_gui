@@ -34,17 +34,32 @@ except Exception as e:
     config = None
 
 # SAM 2 imports
-SAM2_PATH = Path.home() / 'dev/segment-anything-2'
-if SAM2_PATH.exists():
-    sys.path.insert(0, str(SAM2_PATH))
+# Try to import SAM2 from installed package (via pip install)
+try:
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     from sam2.sam2_video_predictor import SAM2VideoPredictor
     SAM2_AVAILABLE = True
-else:
-    SAM2ImagePredictor = None
-    SAM2VideoPredictor = None
-    SAM2_AVAILABLE = False
-    print("Warning: SAM 2 not found. Interactive segmentation will use fallback method.")
+    print("✓ SAM2 package found (installed via pip)")
+except ImportError:
+    # Fallback: Try legacy path-based import
+    SAM2_PATH = Path.home() / 'dev/segment-anything-2'
+    if SAM2_PATH.exists():
+        sys.path.insert(0, str(SAM2_PATH))
+        try:
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+            from sam2.sam2_video_predictor import SAM2VideoPredictor
+            SAM2_AVAILABLE = True
+            print(f"✓ SAM2 found at legacy path: {SAM2_PATH}")
+        except ImportError:
+            SAM2ImagePredictor = None
+            SAM2VideoPredictor = None
+            SAM2_AVAILABLE = False
+            print("Warning: SAM 2 not found. Interactive segmentation will use fallback method.")
+    else:
+        SAM2ImagePredictor = None
+        SAM2VideoPredictor = None
+        SAM2_AVAILABLE = False
+        print("Warning: SAM 2 not found. Interactive segmentation will use fallback method.")
 
 class SAMInteractiveWebApp:
     """
@@ -145,8 +160,17 @@ class SAMInteractiveWebApp:
         if SAM2_AVAILABLE:
             try:
                 print("Initializing Lite Annotator...")
+                # Try to find SAM2 base path
+                sam2_base_path = None
+
+                # Option 1: Legacy path
+                legacy_path = Path.home() / 'dev/segment-anything-2'
+                if legacy_path.exists():
+                    sam2_base_path = legacy_path
+
+                # Option 2: Use None (LiteAnnotator will use installed package)
                 self.lite_annotator = LiteAnnotator(
-                    sam2_base_path=SAM2_PATH,
+                    sam2_base_path=sam2_base_path,
                     device=self.sam2_device if self.sam2_device else "auto"
                 )
                 print("✓ Lite Annotator initialized")
