@@ -137,11 +137,25 @@ echo "   CUDA Available: $CUDA_AVAILABLE"
 echo ""
 
 # ==========================================
-# 4. NumPy 버전 고정
+# 4. NumPy 버전 고정 (PyTorch 2.0.0 호환성)
 # ==========================================
-echo "[4/8] NumPy 1.x 설치..."
+echo ""
+echo "[4/8] NumPy 1.x 설치 (CRITICAL for PyTorch 2.0.0)..."
+echo "   ⚠️  NumPy 2.x breaks PyTorch 2.0.0 compiled extensions"
 conda run -n sam3d_gui pip install "numpy<2"
-echo "✅ NumPy 1.x 설치 완료"
+
+# 검증
+NUMPY_VERSION=$(conda run -n sam3d_gui python -c "import numpy; print(numpy.__version__)" 2>/dev/null)
+NUMPY_MAJOR=$(echo $NUMPY_VERSION | cut -d. -f1)
+
+if [[ "$NUMPY_MAJOR" -ge 2 ]]; then
+    echo "❌ NumPy 버전 오류: $NUMPY_VERSION (2.x는 지원 안됨)"
+    echo "   NumPy 1.x가 필요합니다. 강제 재설치 중..."
+    conda run -n sam3d_gui pip install "numpy<2" --force-reinstall
+    NUMPY_VERSION=$(conda run -n sam3d_gui python -c "import numpy; print(numpy.__version__)" 2>/dev/null)
+fi
+
+echo "✅ NumPy $NUMPY_VERSION 설치 완료 (< 2.0 확인됨)"
 
 # ==========================================
 # 5. Kaolin 설치 (System CUDA 사용)
@@ -249,6 +263,21 @@ conda run -n sam3d_gui pip install \
 # NumPy 버전 재확인
 conda run -n sam3d_gui pip install "numpy<2" --force-reinstall
 
+# SAM2 package 설치 (--no-deps로 PyTorch 업그레이드 방지)
+echo ""
+echo "SAM2 package 설치 중 (interactive segmentation용)..."
+conda run -n sam3d_gui pip install --no-deps git+https://github.com/facebookresearch/segment-anything-2.git
+
+# SAM2 import 검증
+echo "SAM2 package 검증 중..."
+SAM2_CHECK=$(conda run -n sam3d_gui python -c "from sam2.sam2_image_predictor import SAM2ImagePredictor; print('OK')" 2>&1)
+if [[ "$SAM2_CHECK" == *"OK"* ]]; then
+    echo "✅ SAM2 package 설치 및 검증 완료"
+else
+    echo "⚠️  SAM2 import 실패 - 'Contour (fallback)' 모드로 작동 가능"
+    echo "   NumPy 버전을 확인하세요: $(conda run -n sam3d_gui python -c 'import numpy; print(numpy.__version__)')"
+fi
+
 # Web UI
 conda run -n sam3d_gui pip install -r "$PROJECT_ROOT/requirements.txt" || echo "⚠️ 일부 패키지 설치 실패 (핵심은 완료)"
 
@@ -349,7 +378,8 @@ echo "✅ 설치 완료:"
 echo "  - Python 3.10"
 echo "  - System CUDA 11.8 (symlink)"
 echo "  - PyTorch 2.0.0 + CUDA 11.8"
-echo "  - NumPy 1.x"
+echo "  - NumPy 1.x (< 2.0, PyTorch 2.0.0 호환)"
+echo "  - SAM2 package (interactive segmentation)"
 echo "  - Kaolin 0.17.0"
 echo "  - pytorch3d 0.7.7"
 echo "  - gsplat"

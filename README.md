@@ -90,6 +90,12 @@ sam3d_gui/                          # Your main project (manage this only!)
 - **Conda** (Miniconda or Anaconda) - [Install Guide](https://docs.conda.io/en/latest/miniconda.html)
 - **Git** - `sudo apt install git`
 - **CUDA 11.8** - Required for GPU acceleration and 3D reconstruction
+- **⚠️ CRITICAL**: NumPy 1.x (NOT 2.x) - PyTorch 2.0.0 requires NumPy < 2.0
+
+> **Important**: NumPy 2.x breaks PyTorch 2.0.0 compiled extensions. Setup scripts automatically enforce NumPy 1.x, but if you see SAM2 import errors or "Contour (fallback)" warnings, run:
+> ```bash
+> conda run -n sam3d_gui pip install "numpy<2" --force-reinstall
+> ```
 
 ### Method 1: Automated Setup (Recommended) ⭐
 
@@ -103,11 +109,14 @@ cd /home/joon/dev/sam3d_gui
 **What it does**:
 1. ✅ Creates isolated Conda environment `sam3d_gui` (Python 3.10)
 2. ✅ Installs PyTorch 2.0.0 + CUDA 11.8
-3. ✅ Compiles Kaolin 0.17.0, pytorch3d 0.7.7, gsplat
-4. ✅ Installs SAM 3D dependencies (20+ packages)
-5. ✅ Downloads SAM2 checkpoint automatically
-6. ✅ Configures paths with project-root relative paths
-7. ✅ Supports multiple GPU architectures (A6000 + RTX 3060)
+3. ✅ **Enforces NumPy 1.x** (critical for PyTorch 2.0.0 compatibility)
+4. ✅ **Installs SAM2 package** with `--no-deps` (prevents PyTorch upgrade)
+5. ✅ Compiles Kaolin 0.17.0, pytorch3d 0.7.7, gsplat
+6. ✅ Installs SAM 3D dependencies (20+ packages)
+7. ✅ Downloads SAM2 checkpoint automatically (857 MB)
+8. ✅ Configures paths with project-root relative paths (multi-user support)
+9. ✅ Supports multiple GPU architectures (A6000 + RTX 3060)
+10. ✅ **Memory optimization**: FP16 mode + SAM2 unloading for 12GB GPUs
 
 **Time**: 20-30 minutes (one-time setup, includes compilation)
 
@@ -138,9 +147,17 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 # Check PyTorch version
 python -c "import torch; print(f'PyTorch: {torch.__version__}')"
 
+# Check NumPy version (MUST be < 2.0)
+python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+
+# Check SAM2 package (prevents "Contour fallback" issue)
+python -c "from sam2.sam2_image_predictor import SAM2ImagePredictor; print('SAM2: OK')"
+
 # Expected output:
 # CUDA: True
 # PyTorch: 2.0.0+cu118
+# NumPy: 1.26.4
+# SAM2: OK
 ```
 
 ---
@@ -627,6 +644,84 @@ conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
 - Increase frame stride
 - Process shorter segments
 - Close other applications
+
+### Critical Issues (NumPy & SAM2)
+
+**12. "Contour (fallback)" instead of SAM2 segmentation**
+
+This usually indicates SAM2 package import failure. Check:
+
+```bash
+# Verify SAM2 can be imported
+conda run -n sam3d_gui python -c "from sam2.sam2_image_predictor import SAM2ImagePredictor; print('SAM2: OK')"
+
+# If you see NumPy compatibility warnings, check NumPy version
+conda run -n sam3d_gui python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+
+# If NumPy >= 2.0, downgrade immediately:
+conda run -n sam3d_gui pip install "numpy<2" --force-reinstall
+
+# Verify fix
+conda run -n sam3d_gui python -c "from sam2.sam2_image_predictor import SAM2ImagePredictor; print('SAM2: OK')"
+```
+
+**Why this happens:**
+- NumPy 2.x breaks PyTorch 2.0.0 compiled extensions
+- SAM2 import fails silently with NumPy 2.x
+- System falls back to contour-based segmentation
+- **Solution**: Always use NumPy 1.x (< 2.0)
+
+**13. "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x"**
+
+```bash
+# Fix: Downgrade NumPy
+conda run -n sam3d_gui pip install "numpy<2" --force-reinstall
+
+# Ignore these warnings (they're expected):
+# - opencv-python requires numpy>=2 (works fine with 1.x)
+# - sam-2 requires torch>=2.5.1 (we use --no-deps, so this is OK)
+```
+
+**14. CUDA Out of Memory on RTX 3060 12GB**
+
+The application includes automatic memory optimization for 12GB GPUs:
+
+**Features enabled by default:**
+- **FP16 Mode**: Reduces SAM 3D memory usage by ~50% (10GB → 5GB)
+- **SAM2 Unloading**: Frees ~3GB before SAM 3D inference, reloads after
+
+**If still getting OOM:**
+```python
+# Check current memory usage
+nvidia-smi
+
+# The app will automatically:
+# 1. Unload SAM2 models before 3D reconstruction
+# 2. Use FP16 mixed precision for SAM 3D
+# 3. Reload SAM2 after 3D reconstruction completes
+```
+
+**Expected memory profile on RTX 3060:**
+- Idle: ~1-2GB
+- SAM2 segmentation: ~3-4GB
+- SAM 3D reconstruction: ~5-7GB (with FP16 + SAM2 unloaded)
+- Total peak: ~7GB (well within 12GB limit)
+
+**15. "ModuleNotFoundError: No module named 'sam2'"**
+
+SAM2 package not installed. This should be handled by setup scripts, but if it persists:
+
+```bash
+# Install SAM2 without dependencies (prevents PyTorch upgrade)
+conda run -n sam3d_gui pip install --no-deps git+https://github.com/facebookresearch/segment-anything-2.git
+
+# Verify installation
+conda run -n sam3d_gui python -c "from sam2.sam2_image_predictor import SAM2ImagePredictor; print('SAM2: OK')"
+
+# Check PyTorch wasn't upgraded
+conda run -n sam3d_gui python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+# Should be: 2.0.0+cu118
+```
 
 ---
 
