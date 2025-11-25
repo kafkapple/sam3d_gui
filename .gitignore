@@ -40,7 +40,6 @@ env/
 .DS_Store
 Thumbs.db
 
-external/
 # Project specific
 outputs/
 *.ply
@@ -65,16 +64,21 @@ temp/
 # Jupyter
 .ipynb_checkpoints/
 
-# Model checkpoints (large files)
-checkpoints/
+# Model checkpoints (large files) - now unified under external/
 *.pth
 *.pt
 *.ckpt
 *.safetensors
 
-# SAM 3D checkpoints (HuggingFace)
+# External models and checkpoints
+# Keep directory structure, ignore model files
+external/sam2/checkpoints/*.pt
+!external/sam2/checkpoints/.gitkeep
 external/sam-3d-objects/
 **/sam-3d-objects/checkpoints/
+
+# Legacy checkpoint directory (removed - now use external/)
+/checkpoints/
 
 # Environment-specific setup scripts (use generic ones instead)
 setup_cu117.sh
