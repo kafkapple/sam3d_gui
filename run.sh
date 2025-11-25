@@ -1,38 +1,48 @@
 #!/bin/bash
-# SAM 3D GUI - 통합 웹 인터페이스 Launcher
+# SAM 3D GUI - 웹 인터페이스 실행 (상대 경로 기반)
 
-echo "=========================================="
-echo "SAM 3D GUI - Unified Web Interface"
-echo "=========================================="
+# 프로젝트 루트 경로 설정
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$SCRIPT_DIR"
+cd "$PROJECT_ROOT"
+
+echo "==========================================="
+echo "SAM 3D GUI - 웹 인터페이스"
+echo "==========================================="
+echo "프로젝트 루트: $PROJECT_ROOT"
 echo ""
 
-# Check if conda environment exists
+# Conda 환경 확인
 if ! conda env list | grep -q "^sam3d_gui "; then
-    echo "Error: Conda environment 'sam3d_gui' not found"
+    echo "❌ Conda 환경 'sam3d_gui'가 없습니다."
     echo ""
-    echo "Please run setup first:"
+    echo "먼저 환경을 설정하세요:"
     echo "  ./setup.sh"
     echo ""
     exit 1
 fi
 
-# Activate conda environment and run
-echo "Activating conda environment: sam3d_gui"
-echo "Launching web interface..."
+# 환경 변수 설정 (SAM3D 초기화 스킵)
+export LIDRA_SKIP_INIT=1
+
+echo "Conda 환경 활성화: sam3d_gui"
+echo "웹 인터페이스 시작..."
 echo ""
-echo "📱 Access the GUI at:"
-echo "  - Local:  http://localhost:7860"
-echo "  - Network: http://$(hostname -I | awk '{print $1}'):7860"
+echo "📱 접속 주소:"
+echo "  - 로컬:  http://localhost:7860"
+echo "  - 네트워크: http://$(hostname -I | awk '{print $1}'):7860"
 echo ""
-echo "🎬 Features:"
+echo "🎬 기능:"
 echo "  Tab 1: 🚀 Quick Mode - 자동 세그멘테이션 & 모션 감지"
 echo "  Tab 2: 🎨 Interactive Mode - Point annotation & Propagation"
+echo "  Tab 3: 📦 Batch Processing - 대량 비디오 처리"
+echo "  Tab 4: 🎯 Data Augmentation - RGB + Mask 증강"
 echo ""
-echo "Press Ctrl+C to stop the server"
+echo "종료: Ctrl+C"
 echo ""
 
-# Use conda run for better compatibility
-conda run -n sam3d_gui python src/web_app.py
+# 웹 앱 실행 (상대 경로)
+conda run -n sam3d_gui python "$PROJECT_ROOT/src/web_app.py"
 
 echo ""
-echo "Server stopped."
+echo "서버 종료됨."

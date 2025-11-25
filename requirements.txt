@@ -18,8 +18,8 @@ open3d>=0.15.0
 omegaconf>=2.1.0
 hydra-core>=1.1.0
 utils3d
-kaolin
-pytorch3d
+# kaolin - installed from GitHub in setup script
+# pytorch3d - not available on PyPI, needs conda or source build
 gradio
 
 # GUI (typically included with Python)

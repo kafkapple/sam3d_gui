@@ -61,12 +61,13 @@ class TrackingResult:
 class SAM3DProcessor:
     """Main processor for SAM 3D object segmentation and reconstruction"""
 
-    def __init__(self, sam3d_checkpoint_path: str = None):
+    def __init__(self, sam3d_checkpoint_path: str = None, enable_fp16: bool = True):
         """
         Initialize SAM 3D processor
 
         Args:
             sam3d_checkpoint_path: Path to SAM 3D checkpoint directory
+            enable_fp16: Use FP16 mixed precision to reduce memory usage
         """
         if sam3d_checkpoint_path:
             self.sam3d_checkpoint = sam3d_checkpoint_path
@@ -79,40 +80,147 @@ class SAM3DProcessor:
 
         self.inference_model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.enable_fp16 = enable_fp16 and torch.cuda.is_available()
 
-    def initialize_sam3d(self):
-        """Lazy initialization of SAM 3D model"""
-        if self.inference_model is None:
-            print(f"\n🔹 SAM 3D 모델 초기화 중...")
-            print(f"   Checkpoint 경로: {self.sam3d_checkpoint}")
+        # Memory management
+        self._model_loaded = False
+        self._last_inference_time = None
 
-            if self.sam3d_checkpoint is None:
-                raise RuntimeError(
-                    "SAM 3D checkpoint path is None. "
-                    "Please check config/model_config.yaml"
-                )
+    def initialize_sam3d(self, force_reload: bool = False):
+        """
+        Lazy initialization of SAM 3D model with memory optimization
 
-            config_path = os.path.join(self.sam3d_checkpoint, "pipeline.yaml")
-            print(f"   Config 파일 확인: {config_path}")
+        Args:
+            force_reload: Force reload even if model already loaded
+        """
+        if self.inference_model is not None and not force_reload:
+            print(f"   ✓ SAM 3D 모델 이미 로드됨 (재사용)")
+            return
 
-            if not os.path.exists(config_path):
-                raise FileNotFoundError(
-                    f"SAM 3D config not found at {config_path}. "
-                    "Please download checkpoints first."
-                )
+        # Clear GPU cache before loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            initial_memory = torch.cuda.memory_allocated() / 1024**3
+            print(f"\n🔹 GPU 메모리 상태 (로딩 전): {initial_memory:.2f} GB")
 
-            print(f"   ✓ Config 파일 존재 확인")
-            print(f"   Inference 클래스 로드 중...")
+        print(f"\n🔹 SAM 3D 모델 초기화 중...")
+        print(f"   Checkpoint 경로: {self.sam3d_checkpoint}")
+        print(f"   FP16 모드: {'Enabled' if self.enable_fp16 else 'Disabled'}")
 
-            if Inference is None:
-                raise ImportError(
-                    "SAM 3D Inference class not imported. "
-                    "Check if sam-3d-objects is installed correctly."
-                )
+        if self.sam3d_checkpoint is None:
+            raise RuntimeError(
+                "SAM 3D checkpoint path is None. "
+                "Please check config/model_config.yaml"
+            )
 
+        config_path = os.path.join(self.sam3d_checkpoint, "pipeline.yaml")
+        print(f"   Config 파일 확인: {config_path}")
+
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"SAM 3D config not found at {config_path}. "
+                "Please download checkpoints first."
+            )
+
+        print(f"   ✓ Config 파일 존재 확인")
+        print(f"   Inference 클래스 로드 중...")
+
+        if Inference is None:
+            raise ImportError(
+                "SAM 3D Inference class not imported. "
+                "Check if sam-3d-objects is installed correctly."
+            )
+
+        # Load model with memory optimization
+        try:
             self.inference_model = Inference(config_path, compile=False)
-            print(f"   ✓ SAM 3D 모델 로드 완료")
+            self._model_loaded = True
+
+            # Report memory usage
+            if torch.cuda.is_available():
+                final_memory = torch.cuda.memory_allocated() / 1024**3
+                print(f"   ✓ SAM 3D 모델 로드 완료")
+                print(f"   GPU 메모리 사용: {final_memory:.2f} GB (증가: {final_memory - initial_memory:.2f} GB)")
+            else:
+                print(f"   ✓ SAM 3D 모델 로드 완료 (CPU mode)")
+
             print(f"   Model type: {type(self.inference_model)}")
+
+        except torch.cuda.OutOfMemoryError as e:
+            print(f"   ❌ GPU 메모리 부족!")
+            print(f"   해결 방안:")
+            print(f"     1. cleanup_model()로 이전 모델 제거")
+            print(f"     2. 다른 GPU 프로세스 종료")
+            print(f"     3. 시스템 재시작")
+            raise RuntimeError(f"GPU OOM during model loading: {e}") from e
+
+    def cleanup_model(self):
+        """
+        Clean up model and free GPU memory
+        Call this after inference is complete to free up VRAM
+        """
+        if self.inference_model is not None:
+            print(f"\n🔹 SAM 3D 모델 메모리 해제 중...")
+
+            if torch.cuda.is_available():
+                before_memory = torch.cuda.memory_allocated() / 1024**3
+                print(f"   메모리 해제 전: {before_memory:.2f} GB")
+
+            # Delete model
+            del self.inference_model
+            self.inference_model = None
+            self._model_loaded = False
+
+            # Force garbage collection and clear CUDA cache
+            import gc
+            gc.collect()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                after_memory = torch.cuda.memory_allocated() / 1024**3
+                print(f"   메모리 해제 후: {after_memory:.2f} GB")
+                print(f"   ✓ {before_memory - after_memory:.2f} GB 메모리 해제됨")
+            else:
+                print(f"   ✓ 모델 메모리 해제 완료")
+
+    def get_memory_status(self) -> Dict:
+        """Get current GPU memory status"""
+        if not torch.cuda.is_available():
+            return {
+                'available': False,
+                'message': 'CUDA not available'
+            }
+
+        return {
+            'available': True,
+            'allocated_gb': torch.cuda.memory_allocated() / 1024**3,
+            'reserved_gb': torch.cuda.memory_reserved() / 1024**3,
+            'max_allocated_gb': torch.cuda.max_memory_allocated() / 1024**3,
+            'total_gb': torch.cuda.get_device_properties(0).total_memory / 1024**3,
+            'model_loaded': self._model_loaded
+        }
+
+    def print_memory_status(self):
+        """Print current GPU memory status"""
+        status = self.get_memory_status()
+
+        if not status['available']:
+            print(f"GPU: {status['message']}")
+            return
+
+        print(f"\n📊 GPU 메모리 상태:")
+        print(f"   할당됨: {status['allocated_gb']:.2f} GB / {status['total_gb']:.2f} GB")
+        print(f"   예약됨: {status['reserved_gb']:.2f} GB")
+        print(f"   최대 사용: {status['max_allocated_gb']:.2f} GB")
+        print(f"   모델 로드 여부: {'Yes' if status['model_loaded'] else 'No'}")
+
+        # Calculate free memory
+        free_gb = status['total_gb'] - status['allocated_gb']
+        print(f"   사용 가능: {free_gb:.2f} GB")
+
+        if free_gb < 1.0:
+            print(f"   ⚠️  메모리 부족 - cleanup_model() 호출 권장")
 
     def extract_frames(
         self,
@@ -299,7 +407,8 @@ class SAM3DProcessor:
         self,
         frame: np.ndarray,
         mask: np.ndarray,
-        seed: int = 42
+        seed: int = 42,
+        cleanup_after: bool = False
     ) -> Dict:
         """
         Reconstruct 3D object from frame and mask using SAM 3D
@@ -308,6 +417,7 @@ class SAM3DProcessor:
             frame: Input frame (RGB)
             mask: Binary segmentation mask
             seed: Random seed for reproducibility
+            cleanup_after: Clean up model after inference to free VRAM
 
         Returns:
             Dictionary containing reconstruction results
@@ -318,9 +428,21 @@ class SAM3DProcessor:
         print(f"   Seed: {seed}")
         print(f"   SAM3D checkpoint: {self.sam3d_checkpoint}")
 
+        # Show memory status before initialization
+        self.print_memory_status()
+
         try:
             self.initialize_sam3d()
             print(f"   ✓ SAM 3D 모델 초기화 완료")
+        except torch.cuda.OutOfMemoryError as oom_e:
+            print(f"   ❌ GPU 메모리 부족으로 모델 로드 실패")
+            self.print_memory_status()
+            raise RuntimeError(
+                "GPU 메모리가 부족합니다. 다음을 시도하세요:\n"
+                "  1. 다른 GPU 프로그램 종료\n"
+                "  2. cleanup_model() 호출 후 재시도\n"
+                "  3. 시스템 재시작"
+            ) from oom_e
         except Exception as e:
             print(f"   ❌ SAM 3D 초기화 실패: {e}")
             raise
@@ -333,12 +455,50 @@ class SAM3DProcessor:
         print(f"   Inference model type: {type(self.inference_model)}")
         print(f"   Running inference...")
 
+        # Clear cache before inference
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         try:
-            # Run SAM 3D inference
-            output = self.inference_model(frame, mask, seed=seed)
+            # Run SAM 3D inference with autocast for FP16 if enabled
+            if self.enable_fp16 and torch.cuda.is_available():
+                print(f"   Using FP16 mixed precision")
+                with torch.cuda.amp.autocast():
+                    output = self.inference_model(frame, mask, seed=seed)
+            else:
+                output = self.inference_model(frame, mask, seed=seed)
+
             print(f"   ✓ Inference 완료")
             print(f"   Output keys: {output.keys() if output else 'None'}")
+
+            # Update last inference time
+            import time
+            self._last_inference_time = time.time()
+
+            # Show memory status after inference
+            self.print_memory_status()
+
+            # Optionally cleanup model
+            if cleanup_after:
+                print(f"   🧹 자동 정리 모드 활성화됨")
+                self.cleanup_model()
+
             return output
+
+        except torch.cuda.OutOfMemoryError as oom_e:
+            print(f"   ❌ Inference 중 GPU 메모리 부족")
+            self.print_memory_status()
+            print(f"\n   자동 정리 후 재시도 중...")
+
+            # Try cleanup and retry once
+            self.cleanup_model()
+            self.print_memory_status()
+
+            raise RuntimeError(
+                "Inference 중 GPU 메모리 부족. 모델을 정리했습니다.\n"
+                "더 작은 이미지로 재시도하거나 시스템 재시작이 필요합니다."
+            ) from oom_e
+
         except Exception as e:
             print(f"   ❌ Inference 실행 실패: {e}")
             import traceback
