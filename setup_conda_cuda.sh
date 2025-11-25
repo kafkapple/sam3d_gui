@@ -174,6 +174,7 @@ conda run -n sam3d_gui bash -c "
 export TORCH_CUDA_ARCH_LIST='$ARCH_LIST'
 export FORCE_CUDA=1
 export CUDA_HOME='$CONDA_ENV_PATH'
+export PATH='$CONDA_ENV_PATH/bin:\$PATH'
 pip install --no-build-isolation git+https://github.com/NVIDIAGameWorks/kaolin.git@v0.17.0
 "
 
@@ -196,6 +197,7 @@ conda run -n sam3d_gui bash -c "
 export TORCH_CUDA_ARCH_LIST='$ARCH_LIST'
 export FORCE_CUDA=1
 export CUDA_HOME='$CONDA_ENV_PATH'
+export PATH='$CONDA_ENV_PATH/bin:\$PATH'
 pip install --no-build-isolation git+https://github.com/nerfstudio-project/gsplat.git@2323de5905d5e90e035f792fe65bad0fedd413e7
 "
 
@@ -204,6 +206,7 @@ conda run -n sam3d_gui bash -c "
 export TORCH_CUDA_ARCH_LIST='$ARCH_LIST'
 export FORCE_CUDA=1
 export CUDA_HOME='$CONDA_ENV_PATH'
+export PATH='$CONDA_ENV_PATH/bin:\$PATH'
 pip install --no-build-isolation 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'
 "
 
