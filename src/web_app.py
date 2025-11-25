@@ -2857,8 +2857,6 @@ dataset:
 
                             gr.Markdown("### 💾 세션 관리")
 
-                            save_session_btn = gr.Button("💾 Save Session", variant="primary")
-
                             gr.Markdown("**세션 로드**")
                             with gr.Row():
                                 session_refresh_btn = gr.Button("🔄 목록 새로고침", size="sm")
