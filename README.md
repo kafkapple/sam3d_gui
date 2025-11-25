@@ -49,7 +49,7 @@ sam3d_gui/                          # Your main project (manage this only!)
 │   └── sam3d_processor.py         # Processing engine (450+ lines)
 │
 ├── external/                       # External dependencies
-│   └── sam-3d-objects/            # Git submodule (auto-managed)
+│   └── sam-3d-objects/            # Git submodule (PyTorch 2.0 compatible fork)
 │       ├── checkpoints/hf/        # Model weights (download separately)
 │       └── notebook/              # SAM 3D inference code
 │
@@ -1031,7 +1031,7 @@ For comprehensive deployment information, see:
 - `src/sam3d_processor.py` - Processing engine
 
 **External** (external/):
-- `external/sam-3d-objects/` - SAM 3D Objects (submodule)
+- `external/sam-3d-objects/` - SAM 3D Objects (PyTorch 2.0 compatible fork: https://github.com/kafkapple/sam-3d-objects)
 
 ### Adding Features
 

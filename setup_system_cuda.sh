@@ -286,6 +286,8 @@ if [ ! -d "$PROJECT_ROOT/external/sam-3d-objects" ]; then
     echo "⚠️  SAM 3D submodule이 없습니다."
     echo "다음 명령으로 초기화하세요:"
     echo "  git submodule update --init --recursive"
+else
+    echo "✅ SAM 3D submodule (PyTorch 2.0 호환 버전) 발견"
 fi
 
 if [ -d "$SAM3D_DIR" ] && [ "$(ls -A $SAM3D_DIR/*.ckpt 2>/dev/null | wc -l)" -gt 0 ]; then
