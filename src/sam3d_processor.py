@@ -16,6 +16,38 @@ import trimesh
 # Determine SAM3D paths (supports both submodule and standalone)
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 
+# ==========================================
+# SAM3D 호환성 패치 적용 (GLIBC 2.27, kaolin, lightning)
+# ==========================================
+def _apply_sam3d_patches():
+    """SAM3D import 전에 호환성 패치 적용"""
+    from unittest.mock import MagicMock
+
+    # torch._dynamo mock (PyTorch 2.0 호환성)
+    if not hasattr(torch, '_dynamo'):
+        torch._dynamo = MagicMock()
+        torch._dynamo.disable = lambda: lambda fn: fn
+
+    # kaolin mock (warp/GLIBC 2.29 의존성 회피)
+    kaolin_mock = MagicMock()
+    sys.modules["kaolin"] = kaolin_mock
+    sys.modules["kaolin.visualize"] = kaolin_mock
+    sys.modules["kaolin.render"] = kaolin_mock
+    sys.modules["kaolin.render.camera"] = kaolin_mock
+    sys.modules["kaolin.physics"] = kaolin_mock
+    sys.modules["kaolin.utils"] = kaolin_mock
+    sys.modules["kaolin.utils.testing"] = kaolin_mock
+
+    # lightning mock (pytorch-lightning 의존성 단순화)
+    lightning_mock = MagicMock()
+    sys.modules["lightning"] = lightning_mock
+    sys.modules["lightning.pytorch"] = lightning_mock
+    sys.modules["lightning.pytorch.utilities"] = lightning_mock
+    sys.modules["lightning.pytorch.utilities.consolidate_checkpoint"] = lightning_mock
+
+# 패치 적용
+_apply_sam3d_patches()
+
 # SAM3D source code paths (for Python imports)
 SAM3D_SUBMODULE_PATH = PROJECT_ROOT / "external" / "sam-3d-objects"
 SAM3D_STANDALONE_PATH = Path.home() / "dev" / "sam-3d-objects"
