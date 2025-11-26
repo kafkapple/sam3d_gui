@@ -1,0 +1,53 @@
+diff --git a/notebook/inference.py b/notebook/inference.py
+index 2fb5553..6826bda 100644
+--- a/notebook/inference.py
++++ b/notebook/inference.py
+@@ -22,8 +22,20 @@ import numpy as np
+ import gradio as gr
+ import matplotlib.pyplot as plt
+ from copy import deepcopy
+-from kaolin.visualize import IpyTurntableVisualizer
+-from kaolin.render.camera import Camera, CameraExtrinsics, PinholeIntrinsics
++# Lazy import kaolin to avoid warp/GLIBC issues
++# These are imported but not actually used in the codebase
++try:
++    from kaolin.visualize import IpyTurntableVisualizer
++    from kaolin.render.camera import Camera, CameraExtrinsics, PinholeIntrinsics
++    KAOLIN_AVAILABLE = True
++except (ImportError, RuntimeError, OSError) as e:
++    IpyTurntableVisualizer = None
++    Camera = None
++    CameraExtrinsics = None
++    PinholeIntrinsics = None
++    KAOLIN_AVAILABLE = False
++    import warnings
++    warnings.warn(f"Kaolin not available: {e}")
+ import builtins
+ from pytorch3d.transforms import quaternion_multiply, quaternion_invert
+ 
+diff --git a/sam3d_objects/model/io.py b/sam3d_objects/model/io.py
+index 313e93c..88bf5b4 100644
+--- a/sam3d_objects/model/io.py
++++ b/sam3d_objects/model/io.py
+@@ -15,8 +15,10 @@ try:
+     )
+     LIGHTNING_AVAILABLE = True
+ except ImportError:
+-    # Create stub for type hints
+-    pl = type('pl', (), {'LightningModule': type('LightningModule', (), {})})()
++    # Create stub for type hints (class, not instance - remove trailing ())
++    class _PLStub:
++        LightningModule = type('LightningModule', (object,), {})
++    pl = _PLStub
+     LIGHTNING_AVAILABLE = False
+     logger.warning("Lightning not available - only inference mode supported")
+ from glob import glob
+@@ -181,7 +183,7 @@ def load_model_from_checkpoint(
+     else:  # if neither a file nor a directory, path does not exist
+         raise FileNotFoundError(checkpoint_path)
+ 
+-    if isinstance(model, pl.LightningModule):
++    if LIGHTNING_AVAILABLE and isinstance(model, pl.LightningModule):
+         model.on_load_checkpoint(checkpoint)
+ 
+     # get state dictionary
