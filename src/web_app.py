@@ -3664,8 +3664,7 @@ dataset:
                                 aug_analyze_btn = gr.Button(
                                     "📈 Generate Quality Report",
                                     variant="secondary",
-                                    size="lg",
-                                    info="Analyze diversity and quality of augmented images"
+                                    size="lg"
                                 )
 
                             with gr.Accordion("⚙️ Analysis Settings", open=False):
