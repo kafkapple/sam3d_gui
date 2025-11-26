@@ -13,12 +13,62 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 import json
 import os
+import logging
 
 # Add src directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Set environment variable to skip SAM3D init (which requires missing module)
 os.environ['LIDRA_SKIP_INIT'] = '1'
+
+# ==========================================
+# 로깅 설정
+# ==========================================
+def setup_logging():
+    """디버그 모드에 따른 로깅 설정"""
+    debug_mode = os.environ.get('SAM3D_DEBUG', '0') == '1'
+
+    # 로그 레벨 설정
+    log_level = logging.DEBUG if debug_mode else logging.INFO
+
+    # 포맷 설정
+    if debug_mode:
+        log_format = '%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s'
+    else:
+        log_format = '%(asctime)s [%(levelname)s] %(message)s'
+
+    # 기본 로깅 설정
+    logging.basicConfig(
+        level=log_level,
+        format=log_format,
+        datefmt='%H:%M:%S',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    # 외부 라이브러리 로그 레벨 조정 (너무 verbose 방지)
+    if not debug_mode:
+        logging.getLogger('PIL').setLevel(logging.WARNING)
+        logging.getLogger('matplotlib').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+    logger = logging.getLogger('sam3d_gui')
+    logger.setLevel(log_level)
+
+    if debug_mode:
+        logger.info("🔧 디버그 모드 활성화")
+        logger.debug(f"Python: {sys.version}")
+        logger.debug(f"PyTorch: {torch.__version__}")
+        logger.debug(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.debug(f"CUDA device: {torch.cuda.get_device_name(0)}")
+            logger.debug(f"CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+
+    return logger
+
+# 로거 초기화
+logger = setup_logging()
 
 from sam3d_processor import SAM3DProcessor
 from config_loader import ModelConfig
@@ -1723,9 +1773,9 @@ class SAMInteractiveWebApp:
         if self.config:
             checkpoint_dir = Path(self.config.sam3d_checkpoint_dir).expanduser()
         else:
-            # Fallback: relative to project root
+            # Fallback: relative to project root (통합 구조)
             project_root = Path(__file__).parent.parent
-            checkpoint_dir = project_root / "external" / "sam-3d-objects" / "checkpoints" / "hf"
+            checkpoint_dir = project_root / "checkpoints" / "sam3d"
 
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1787,13 +1837,22 @@ class SAMInteractiveWebApp:
         """
         세그멘테이션 결과로 3D mesh 생성
         """
-        print("\n" + "="*80)
-        print("🔹 generate_3d_mesh() 시작")
-        print("="*80)
+        logger.info("=" * 60)
+        logger.info("🔹 generate_3d_mesh() 시작")
+        logger.info("=" * 60)
+
+        # GPU 메모리 상태 로깅
+        if torch.cuda.is_available():
+            mem_allocated = torch.cuda.memory_allocated() / 1024**3
+            mem_reserved = torch.cuda.memory_reserved() / 1024**3
+            mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            logger.debug(f"GPU 메모리: {mem_allocated:.2f}GB / {mem_total:.2f}GB (reserved: {mem_reserved:.2f}GB)")
 
         if len(self.frames) == 0 or all(m is None for m in self.masks):
-            print("❌ 프레임 또는 마스크 없음")
+            logger.error("❌ 프레임 또는 마스크 없음")
             return None, "먼저 세그멘테이션을 완료하세요"
+
+        logger.debug(f"프레임 수: {len(self.frames)}, 마스크 수: {sum(1 for m in self.masks if m is not None)}")
 
         try:
             progress(0, desc="3D mesh 생성 준비 중...")
@@ -1801,18 +1860,26 @@ class SAMInteractiveWebApp:
             # SAM 3D 체크포인트 확인
             if self.config:
                 checkpoint_dir = Path(self.config.sam3d_checkpoint_dir).expanduser()
-                print(f"✓ Config에서 checkpoint 경로 로드: {checkpoint_dir}")
+                logger.info(f"✓ Config에서 checkpoint 경로 로드: {checkpoint_dir}")
             else:
-                # Fallback: relative to project root
+                # Fallback: relative to project root (통합 구조)
                 project_root = Path(__file__).parent.parent
-                checkpoint_dir = project_root / "external" / "sam-3d-objects" / "checkpoints" / "hf"
-                print(f"✓ 기본 checkpoint 경로 사용: {checkpoint_dir}")
+                checkpoint_dir = project_root / "checkpoints" / "sam3d"
+                logger.info(f"✓ 기본 checkpoint 경로 사용: {checkpoint_dir}")
 
-            print(f"✓ Checkpoint 존재 확인 중: {checkpoint_dir}")
-            print(f"   pipeline.yaml 존재: {(checkpoint_dir / 'pipeline.yaml').exists()}")
+            logger.info(f"✓ Checkpoint 존재 확인 중: {checkpoint_dir}")
+            logger.debug(f"   checkpoint_dir.exists(): {checkpoint_dir.exists()}")
+            logger.debug(f"   pipeline.yaml 존재: {(checkpoint_dir / 'pipeline.yaml').exists()}")
+
+            # 체크포인트 파일 목록 로깅
+            if checkpoint_dir.exists():
+                ckpt_files = list(checkpoint_dir.glob("*.ckpt"))
+                logger.debug(f"   .ckpt 파일 수: {len(ckpt_files)}")
+                for f in ckpt_files[:5]:  # 처음 5개만
+                    logger.debug(f"     - {f.name}: {f.stat().st_size / 1024**2:.1f} MB")
 
             if not (checkpoint_dir / "pipeline.yaml").exists():
-                print("❌ pipeline.yaml 파일이 없음")
+                logger.error("❌ pipeline.yaml 파일이 없음")
                 progress(0.1, desc="SAM 3D 체크포인트 없음, 다운로드 시작...")
 
                 download_success = self.download_sam3d_checkpoint(progress)
@@ -1823,15 +1890,13 @@ class SAMInteractiveWebApp:
 
 **수동 다운로드 방법:**
 ```bash
-# 프로젝트 루트로 이동 후
-./download_sam3d.sh
+# 프로젝트 루트에서 실행
+./download_checkpoints.sh
 ```
 
-또는 다음 명령어:
-```bash
-cd external/sam-3d-objects
-git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
-```
+**필요한 설정:**
+1. `.env` 파일에 HuggingFace 토큰 설정: `HF_TOKEN=your_token`
+2. Git LFS 설치: `sudo apt install git-lfs`
 """
 
             # 대표 프레임 선택 (중간 프레임)
@@ -1839,17 +1904,18 @@ git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
             frame = self.frames[mid_idx]
             mask = self.masks[mid_idx]
 
-            print(f"\n✓ 대표 프레임 선택: {mid_idx + 1}/{len(self.frames)}")
-            print(f"   Frame shape: {frame.shape}")
-            print(f"   Mask shape: {mask.shape if mask is not None else 'None'}")
-            print(f"   Mask type: {type(mask)}")
+            logger.info(f"✓ 대표 프레임 선택: {mid_idx + 1}/{len(self.frames)}")
+            logger.debug(f"   Frame shape: {frame.shape}, dtype: {frame.dtype}")
+            logger.debug(f"   Mask shape: {mask.shape if mask is not None else 'None'}")
+            logger.debug(f"   Mask type: {type(mask)}, unique values: {np.unique(mask) if mask is not None else 'N/A'}")
 
             if mask is None:
-                print("❌ 중간 프레임에 마스크 없음")
+                logger.error("❌ 중간 프레임에 마스크 없음")
                 return None, "중간 프레임에 마스크가 없습니다"
 
             # 3D 재구성 시도
-            print("\n✓ 3D 재구성 시작...")
+            logger.info("✓ 3D 재구성 시작...")
+            logger.debug(f"   SAM3DProcessor checkpoint: {self.processor.sam3d_checkpoint}")
             progress(0.5, desc="SAM 3D 재구성 중...")
 
             # Unload SAM2 models to free GPU memory for SAM 3D
@@ -1857,8 +1923,19 @@ git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
             self.unload_sam2_models()
 
             try:
+                logger.info("SAM3D inference 시작...")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    mem_before = torch.cuda.memory_allocated() / 1024**3
+                    logger.debug(f"   GPU 메모리 (inference 전): {mem_before:.2f} GB")
+
                 reconstruction = self.processor.reconstruct_3d(frame, mask)
-                print(f"✓ Reconstruction 완료: {type(reconstruction)}")
+
+                if torch.cuda.is_available():
+                    mem_after = torch.cuda.memory_allocated() / 1024**3
+                    logger.debug(f"   GPU 메모리 (inference 후): {mem_after:.2f} GB")
+
+                logger.info(f"✓ Reconstruction 완료: {type(reconstruction)}")
 
                 if reconstruction:
                     # PLY 저장
@@ -1867,9 +1944,10 @@ git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
                     output_dir.mkdir(parents=True, exist_ok=True)
                     output_path = output_dir / "reconstruction.ply"
 
-                    print(f"\n✓ Mesh 저장 중: {output_path}")
+                    logger.info(f"✓ Mesh 저장 중: {output_path}")
                     self.processor.export_mesh(reconstruction, str(output_path), format='ply')
-                    print(f"✓ Mesh 저장 완료")
+                    logger.info(f"✓ Mesh 저장 완료")
+                    logger.debug(f"   Output keys: {reconstruction.keys() if isinstance(reconstruction, dict) else 'N/A'}")
 
                     progress(1.0, desc="완료!")
 

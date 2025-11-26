@@ -84,11 +84,5 @@ external/sam2/checkpoints/
 external/sam-3d-objects/checkpoints/
 **/sam-3d-objects/checkpoints/
 
-# Environment-specific setup scripts (use generic ones instead)
-setup_cu117.sh
-setup_conda_cuda.sh
-
 # Environment reports
 environment_report*.txt
-check_environment.sh
-check_environment_v2.sh

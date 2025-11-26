@@ -6,10 +6,21 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR"
 cd "$PROJECT_ROOT"
 
+# 디버그 모드 확인
+DEBUG_MODE=0
+if [[ "$1" == "--debug" ]] || [[ "$1" == "-d" ]]; then
+    DEBUG_MODE=1
+    export SAM3D_DEBUG=1
+    export PYTHONUNBUFFERED=1
+fi
+
 echo "==========================================="
 echo "SAM 3D GUI - 웹 인터페이스"
 echo "==========================================="
 echo "프로젝트 루트: $PROJECT_ROOT"
+if [[ "$DEBUG_MODE" == "1" ]]; then
+    echo "🔧 디버그 모드: ON"
+fi
 echo ""
 
 # Conda 환경 확인
@@ -39,6 +50,8 @@ echo "  Tab 3: 📦 Batch Processing - 대량 비디오 처리"
 echo "  Tab 4: 🎯 Data Augmentation - RGB + Mask 증강"
 echo ""
 echo "종료: Ctrl+C"
+echo ""
+echo "💡 디버그 모드: ./run.sh --debug"
 echo ""
 
 # 웹 앱 실행 (상대 경로)
