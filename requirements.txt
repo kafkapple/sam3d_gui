@@ -21,6 +21,7 @@ utils3d
 # kaolin - installed from GitHub in setup script
 # pytorch3d - not available on PyPI, needs conda or source build
 gradio
+seaborn
 
 # GUI (typically included with Python)
 # tkinter - included in standard Python installation
