@@ -17,10 +17,20 @@ import sys
 from typing import Tuple, List, Optional, Dict, Any
 import torch
 
-# SAM 2 imports
-sys.path.append(str(Path.home() / 'dev/segment-anything-2'))
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-from sam2.build_sam import build_sam2
+# Project root for relative path resolution
+PROJECT_ROOT = Path(__file__).parent.parent.absolute()
+
+# SAM 2 imports - try installed package first, then fallback to submodule
+try:
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.build_sam import build_sam2
+except ImportError:
+    # Fallback to external submodule path
+    SAM2_PATH = PROJECT_ROOT / "external" / "segment-anything-2"
+    if SAM2_PATH.exists():
+        sys.path.insert(0, str(SAM2_PATH))
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.build_sam import build_sam2
 
 
 class LiteAnnotator:
@@ -31,39 +41,44 @@ class LiteAnnotator:
     Integrated into SAM 3D GUI as Tab 3: Lite Mode
     """
 
-    # SAM 2.1 Model configurations
+    # SAM 2 Model configurations
+    # Checkpoint paths are relative to project checkpoints/sam2/ directory
     SAM_MODELS = {
         'tiny': {
-            'config': 'configs/sam2.1/sam2.1_hiera_t.yaml',
-            'checkpoint': 'checkpoints/sam2.1_hiera_tiny.pt',
+            'config': 'sam2.1_hiera_t.yaml',
+            'checkpoint': 'sam2.1_hiera_tiny.pt',
             'description': 'Fastest, lower quality'
         },
         'small': {
-            'config': 'configs/sam2.1/sam2.1_hiera_s.yaml',
-            'checkpoint': 'checkpoints/sam2.1_hiera_small.pt',
+            'config': 'sam2.1_hiera_s.yaml',
+            'checkpoint': 'sam2.1_hiera_small.pt',
             'description': 'Fast, good quality'
         },
         'base_plus': {
-            'config': 'configs/sam2.1/sam2.1_hiera_b+.yaml',
-            'checkpoint': 'checkpoints/sam2.1_hiera_base_plus.pt',
+            'config': 'sam2.1_hiera_b+.yaml',
+            'checkpoint': 'sam2.1_hiera_base_plus.pt',
             'description': 'Balanced'
         },
         'large': {
-            'config': 'configs/sam2.1/sam2.1_hiera_l.yaml',
-            'checkpoint': 'checkpoints/sam2.1_hiera_large.pt',
+            'config': 'sam2_hiera_l.yaml',
+            'checkpoint': 'sam2_hiera_large.pt',
             'description': 'Best quality, slower'
         }
     }
 
-    def __init__(self, sam2_base_path: Path, device: str = "cuda"):
+    def __init__(self, sam2_base_path: Path = None, device: str = "cuda"):
         """
         Initialize Lite Annotator
 
         Args:
-            sam2_base_path: Path to segment-anything-2 repository
+            sam2_base_path: (Deprecated) Path to segment-anything-2 repository
+                           Now uses project checkpoints/sam2/ by default
             device: Device to run model on ("cuda", "cpu", or "auto")
         """
-        self.sam2_base_path = sam2_base_path
+        # Use project-relative checkpoint path (unified structure)
+        self.checkpoint_dir = PROJECT_ROOT / "checkpoints" / "sam2"
+        # Legacy: keep sam2_base_path for backward compatibility
+        self.sam2_base_path = sam2_base_path or self.checkpoint_dir
         self.device = self._resolve_device(device)
 
         # Input source state
@@ -87,8 +102,8 @@ class LiteAnnotator:
         self.predictor = None
         self.current_model = None
 
-        # Output directory
-        self.output_dir = Path.home() / "dev/sam3d_gui/outputs/lite_annotations"
+        # Output directory (project-relative)
+        self.output_dir = PROJECT_ROOT / "outputs" / "lite_annotations"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _resolve_device(self, device: str) -> str:
@@ -116,16 +131,16 @@ class LiteAnnotator:
         try:
             model_info = self.SAM_MODELS[model_name]
 
-            # Resolve paths
-            config_path = self.sam2_base_path / model_info['config']
-            checkpoint_path = self.sam2_base_path / model_info['checkpoint']
+            # Resolve paths - use unified checkpoint directory
+            config_name = model_info['config']
+            checkpoint_path = self.checkpoint_dir / model_info['checkpoint']
 
             if not checkpoint_path.exists():
-                return f"Checkpoint not found: {checkpoint_path}"
+                return f"Checkpoint not found: {checkpoint_path}\nRun ./download_checkpoints.sh to download"
 
-            # Build SAM 2 model
+            # Build SAM 2 model (config is loaded by name from sam2 package)
             sam2_model = build_sam2(
-                config_file=str(config_path),
+                config_file=config_name,
                 ckpt_path=str(checkpoint_path),
                 device=self.device
             )

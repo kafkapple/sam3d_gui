@@ -64,21 +64,25 @@ temp/
 # Jupyter
 .ipynb_checkpoints/
 
-# Model checkpoints (large files) - now unified under external/
+# Model checkpoints (large files)
+# Unified under checkpoints/ directory (2025-11-26)
 *.pth
-*.pt
-*.ckpt
-*.safetensors
 
-# External models and checkpoints
-# Keep directory structure, ignore model files
-external/sam2/checkpoints/*.pt
-!external/sam2/checkpoints/.gitkeep
-external/sam-3d-objects/
+# Checkpoints directory (unified structure)
+# checkpoints/
+# ├── sam2/     # SAM2 체크포인트
+# └── sam3d/    # SAM3D 체크포인트
+/checkpoints/sam2/*.pt
+/checkpoints/sam3d/*.ckpt
+/checkpoints/sam3d/*.pt
+/checkpoints/sam3d/*.safetensors
+!checkpoints/sam2/.gitkeep
+!checkpoints/sam3d/.gitkeep
+
+# Legacy checkpoint locations (deprecated, migrated to checkpoints/)
+external/sam2/checkpoints/
+external/sam-3d-objects/checkpoints/
 **/sam-3d-objects/checkpoints/
-
-# Legacy checkpoint directory (removed - now use external/)
-/checkpoints/
 
 # Environment-specific setup scripts (use generic ones instead)
 setup_cu117.sh

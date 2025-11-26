@@ -13,18 +13,35 @@ from dataclasses import dataclass
 from PIL import Image
 import trimesh
 
-# Determine SAM3D path (supports both submodule and standalone)
+# Determine SAM3D paths (supports both submodule and standalone)
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()
+
+# SAM3D source code paths (for Python imports)
 SAM3D_SUBMODULE_PATH = PROJECT_ROOT / "external" / "sam-3d-objects"
 SAM3D_STANDALONE_PATH = Path.home() / "dev" / "sam-3d-objects"
 
-# Use submodule if available, otherwise fall back to standalone
+# SAM3D checkpoint paths (unified structure: checkpoints/sam3d/)
+SAM3D_CHECKPOINT_UNIFIED = PROJECT_ROOT / "checkpoints" / "sam3d"
+SAM3D_CHECKPOINT_LEGACY = PROJECT_ROOT / "external" / "sam-3d-objects" / "checkpoints" / "hf"
+SAM3D_CHECKPOINT_STANDALONE = Path.home() / "sam-3d-objects" / "checkpoints" / "hf"
+
+# Determine source code path
 if SAM3D_SUBMODULE_PATH.exists():
     SAM3D_PATH = str(SAM3D_SUBMODULE_PATH)
 elif SAM3D_STANDALONE_PATH.exists():
     SAM3D_PATH = str(SAM3D_STANDALONE_PATH)
 else:
     SAM3D_PATH = None  # Will be handled during initialization
+
+# Determine checkpoint path (priority: unified > legacy > standalone)
+if SAM3D_CHECKPOINT_UNIFIED.exists() and any(SAM3D_CHECKPOINT_UNIFIED.glob("*.ckpt")):
+    SAM3D_CHECKPOINT_PATH = str(SAM3D_CHECKPOINT_UNIFIED)
+elif SAM3D_CHECKPOINT_LEGACY.exists() and any(SAM3D_CHECKPOINT_LEGACY.glob("*.ckpt")):
+    SAM3D_CHECKPOINT_PATH = str(SAM3D_CHECKPOINT_LEGACY)
+elif SAM3D_CHECKPOINT_STANDALONE.exists():
+    SAM3D_CHECKPOINT_PATH = str(SAM3D_CHECKPOINT_STANDALONE)
+else:
+    SAM3D_CHECKPOINT_PATH = str(SAM3D_CHECKPOINT_UNIFIED)  # Default for error message
 
 if SAM3D_PATH:
     sys.path.insert(0, SAM3D_PATH)
@@ -71,12 +88,12 @@ class SAM3DProcessor:
         """
         if sam3d_checkpoint_path:
             self.sam3d_checkpoint = sam3d_checkpoint_path
-        elif SAM3D_PATH:
-            self.sam3d_checkpoint = os.path.join(SAM3D_PATH, "checkpoints/hf")
+        elif SAM3D_CHECKPOINT_PATH and Path(SAM3D_CHECKPOINT_PATH).exists():
+            self.sam3d_checkpoint = SAM3D_CHECKPOINT_PATH
         else:
             self.sam3d_checkpoint = None
-            print("Warning: SAM 3D Objects not found. 3D reconstruction will be unavailable.")
-            print("Run setup.sh to install sam-3d-objects as a submodule.")
+            print("Warning: SAM 3D Objects checkpoints not found.")
+            print("Run ./download_checkpoints.sh to download checkpoints to checkpoints/sam3d/")
 
         self.inference_model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"

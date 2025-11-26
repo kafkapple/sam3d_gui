@@ -284,22 +284,25 @@ conda run -n sam3d_gui pip install -r "$PROJECT_ROOT/requirements.txt" || echo "
 echo "✅ 기타 의존성 설치 완료"
 
 # ==========================================
-# 모델 다운로드
+# 모델 다운로드 (통합 checkpoints/ 구조)
 # ==========================================
 echo ""
 echo "============================================="
 echo "모델 체크포인트 다운로드"
 echo "============================================="
+echo ""
+echo "통합 체크포인트 구조:"
+echo "  checkpoints/"
+echo "  ├── sam2/    # SAM2 체크포인트"
+echo "  └── sam3d/   # SAM3D 체크포인트"
+echo ""
 
-CHECKPOINT_DIR="$PROJECT_ROOT/checkpoints"
-mkdir -p "$CHECKPOINT_DIR"
-
-# SAM2 체크포인트 (external/ 디렉토리로 통합)
-SAM2_DIR="$PROJECT_ROOT/external/sam2/checkpoints"
+# SAM2 체크포인트 (통합 checkpoints/sam2/ 디렉토리)
+SAM2_DIR="$PROJECT_ROOT/checkpoints/sam2"
 mkdir -p "$SAM2_DIR"
 
 if [ -f "$SAM2_DIR/sam2_hiera_large.pt" ]; then
-    echo "✅ SAM2 체크포인트 이미 존재"
+    echo "✅ SAM2 체크포인트 이미 존재: $SAM2_DIR/sam2_hiera_large.pt"
 else
     echo "SAM2 체크포인트 다운로드 중..."
     cd "$SAM2_DIR"
@@ -308,9 +311,7 @@ else
     cd "$PROJECT_ROOT"
 fi
 
-# SAM 3D 체크포인트
-SAM3D_DIR="$PROJECT_ROOT/external/sam-3d-objects/checkpoints/hf"
-
+# SAM 3D submodule 확인 (소스코드용)
 if [ ! -d "$PROJECT_ROOT/external/sam-3d-objects" ]; then
     echo "⚠️  SAM 3D submodule이 없습니다."
     echo "다음 명령으로 초기화하세요:"
@@ -319,13 +320,16 @@ else
     echo "✅ SAM 3D submodule (PyTorch 2.0 호환 버전) 발견"
 fi
 
+# SAM 3D 체크포인트 (통합 checkpoints/sam3d/ 디렉토리)
+SAM3D_DIR="$PROJECT_ROOT/checkpoints/sam3d"
+
 if [ -d "$SAM3D_DIR" ] && [ "$(ls -A $SAM3D_DIR/*.ckpt 2>/dev/null | wc -l)" -gt 0 ]; then
-    echo "✅ SAM 3D 체크포인트 이미 존재"
+    echo "✅ SAM 3D 체크포인트 이미 존재: $SAM3D_DIR"
 else
     echo ""
     echo "⚠️  SAM 3D 체크포인트가 없습니다."
     echo "다음 스크립트로 다운로드하세요:"
-    echo "  ./download_sam3d.sh"
+    echo "  ./download_checkpoints.sh"
 fi
 
 # ==========================================
@@ -399,7 +403,7 @@ echo "  - CUDA Architecture: $ARCH_LIST"
 echo ""
 echo "📋 다음 단계:"
 echo "  1. SAM 3D 체크포인트 다운로드 (아직 안 한 경우):"
-echo "     ./download_sam3d.sh"
+echo "     ./download_checkpoints.sh"
 echo ""
 echo "  2. 환경 활성화 및 테스트:"
 echo "     conda activate sam3d_gui"

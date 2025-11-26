@@ -1,13 +1,30 @@
 #!/bin/bash
 # SAM 3D 체크포인트 다운로드 스크립트
+#
+# 이 스크립트는 download_checkpoints.sh로 통합되었습니다.
+# 하위 호환성을 위해 유지됩니다.
 
+echo "=========================================="
+echo "⚠️  이 스크립트는 download_checkpoints.sh로 통합되었습니다."
+echo "   ./download_checkpoints.sh 를 사용하세요."
+echo "=========================================="
+echo ""
+echo "자동으로 새 스크립트를 실행합니다..."
+echo ""
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/download_checkpoints.sh" "$@"
+
+# 아래는 레거시 코드 (참조용, 실행되지 않음)
+exit 0
+
+# Legacy code below (not executed)
 echo "=========================================="
 echo "SAM 3D Objects - 체크포인트 다운로드"
 echo "=========================================="
 echo ""
 
 # .env 파일에서 HuggingFace 토큰 로드
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # .env 파일 확인 및 자동 생성 제안
 if [ ! -f "$SCRIPT_DIR/.env" ]; then
