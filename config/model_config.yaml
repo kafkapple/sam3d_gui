@@ -27,10 +27,10 @@ sam2:
 # SAM 3D 설정 (3D reconstruction)
 sam3d:
   name: "SAM 3D Objects"
-  # 기본 경로: 프로젝트 external 서브모듈
-  checkpoint_dir: "${oc.env:HOME}/dev/sam3d_gui/external/sam-3d-objects/checkpoints/hf/checkpoints"
-  # 대체 경로: standalone 설치
-  checkpoint_dir_alt: "${oc.env:HOME}/dev/sam-3d-objects/checkpoints/hf/checkpoints"
+  # 기본 경로: 프로젝트 external 서브모듈 (상대 경로로 다중 서버 지원)
+  checkpoint_dir: "external/sam-3d-objects/checkpoints/hf"
+  # 대체 경로: standalone 설치 (절대 경로 fallback)
+  checkpoint_dir_alt: "${oc.env:HOME}/sam-3d-objects/checkpoints/hf"
 
   # 다운로드 안내
   download_url: "https://huggingface.co/facebook/sam-3d-objects"
