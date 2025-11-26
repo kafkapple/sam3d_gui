@@ -1967,6 +1967,7 @@ meshlab {output_path}
 
             metadata = {
                 "session_id": session_id,
+                "session_type": "interactive",  # For scan_aug_sessions to find it
                 "video_path": self.video_path,
                 "num_frames": num_frames_saved,  # Load 함수가 찾는 키
                 "num_frames_total": len(self.frames),
@@ -3647,37 +3648,45 @@ dataset:
                                 return gr.Dropdown(choices=[]), "❌ Session directory not found"
 
                             # Find all session files (both session.json and session_metadata.json)
-                            sessions = []
+                            sessions = set()  # Use set to avoid duplicates
 
-                            # Search for interactive sessions (session.json)
-                            for session_file in session_path.rglob("session.json"):
-                                # Verify it's an interactive session by reading the file
-                                try:
-                                    with open(session_file, 'r') as f:
-                                        metadata = json.load(f)
-                                        if metadata.get('session_type') != 'batch':
-                                            session_name = session_file.parent.name
-                                            sessions.append(str(session_file.parent))
-                                except:
-                                    # If can't read, assume it's valid
-                                    session_name = session_file.parent.name
-                                    sessions.append(str(session_file.parent))
-
-                            # Also search for batch sessions (session_metadata.json) - they can also be augmented
+                            # Search for all session_metadata.json files (both interactive and batch)
                             for session_file in session_path.rglob("session_metadata.json"):
                                 try:
                                     with open(session_file, 'r') as f:
                                         metadata = json.load(f)
-                                        if metadata.get('session_type') == 'batch':
-                                            session_name = session_file.parent.name
-                                            sessions.append(str(session_file.parent))
+                                        # Include all sessions regardless of type
+                                        # (interactive, batch, or unspecified)
+                                        session_dir_path = str(session_file.parent)
+                                        sessions.add(session_dir_path)
+                                except Exception as e:
+                                    # If can't read metadata, still add it
+                                    session_dir_path = str(session_file.parent)
+                                    sessions.add(session_dir_path)
+
+                            # Also search for legacy session.json files (for backward compatibility)
+                            for session_file in session_path.rglob("session.json"):
+                                try:
+                                    session_dir_path = str(session_file.parent)
+                                    # Only add if not already in set from session_metadata.json
+                                    if session_dir_path not in sessions:
+                                        with open(session_file, 'r') as f:
+                                            metadata = json.load(f)
+                                            # Skip batch sessions (they should have session_metadata.json)
+                                            if metadata.get('session_type') != 'batch':
+                                                sessions.add(session_dir_path)
                                 except:
-                                    pass
+                                    # If can't read, add it anyway
+                                    session_dir_path = str(session_file.parent)
+                                    if session_dir_path not in sessions:
+                                        sessions.add(session_dir_path)
 
                             if not sessions:
                                 return gr.Dropdown(choices=[]), "⚠️ No sessions found"
 
-                            return gr.Dropdown(choices=sessions), f"✅ Found {len(sessions)} sessions"
+                            # Convert set to sorted list
+                            session_list = sorted(list(sessions))
+                            return gr.Dropdown(choices=session_list), f"✅ Found {len(session_list)} sessions"
                         except Exception as e:
                             return gr.Dropdown(choices=[]), f"❌ Error: {str(e)}"
 
