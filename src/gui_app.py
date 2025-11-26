@@ -40,9 +40,9 @@ class SAM3DGUI:
         # Setup UI
         self.setup_ui()
 
-        # Default data directory (relative to project root)
+        # Default data directory (one level above project root)
         project_root = Path(__file__).parent.parent
-        self.data_dir = str(project_root / "data" / "markerless_mouse")
+        self.data_dir = str(project_root.parent / "data" / "markerless_mouse")
         self.output_dir = str(project_root / "outputs")
 
     def setup_ui(self):

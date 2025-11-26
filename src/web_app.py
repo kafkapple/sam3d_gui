@@ -148,9 +148,9 @@ class SAMInteractiveWebApp:
             self.default_data_dir = config.default_data_dir
             self.default_output_dir = config.output_dir
         else:
-            # Fallback: relative to project root
+            # Fallback: data one level above project root, output inside
             project_root = Path(__file__).parent.parent
-            self.default_data_dir = str(project_root / "data" / "markerless_mouse")
+            self.default_data_dir = str(project_root.parent / "data" / "markerless_mouse")
             self.default_output_dir = str(project_root / "outputs")
 
         # Data Augmentor 초기화
