@@ -30,10 +30,16 @@ class ModelConfig:
         # Resolve environment variables
         OmegaConf.resolve(self.cfg)
 
+        # Store project root for resolving relative paths
+        self.project_root = Path(__file__).parent.parent
+
     @property
     def sam2_checkpoint(self) -> str:
         """Get SAM2 checkpoint path"""
         path = Path(self.cfg.sam2.checkpoint).expanduser()
+        # If relative path, resolve from project root
+        if not path.is_absolute():
+            path = (self.project_root / path).resolve()
         return str(path)
 
     @property
@@ -50,10 +56,16 @@ class ModelConfig:
     def sam3d_checkpoint_dir(self) -> str:
         """Get SAM3D checkpoint directory (try primary, then alternative)"""
         primary = Path(self.cfg.sam3d.checkpoint_dir).expanduser()
+        # If relative path, resolve from project root
+        if not primary.is_absolute():
+            primary = (self.project_root / primary).resolve()
         if primary.exists():
             return str(primary)
 
         alt = Path(self.cfg.sam3d.checkpoint_dir_alt).expanduser()
+        # Alt is usually absolute with ~, but check anyway
+        if not alt.is_absolute():
+            alt = (self.project_root / alt).resolve()
         if alt.exists():
             return str(alt)
 
@@ -64,12 +76,18 @@ class ModelConfig:
     def default_data_dir(self) -> str:
         """Get default data directory"""
         path = Path(self.cfg.data.default_dir).expanduser()
+        # If relative path, resolve from project root
+        if not path.is_absolute():
+            path = (self.project_root / path).resolve()
         return str(path)
 
     @property
     def output_dir(self) -> str:
         """Get output directory"""
         path = Path(self.cfg.data.output_dir).expanduser()
+        # If relative path, resolve from project root
+        if not path.is_absolute():
+            path = (self.project_root / path).resolve()
         path.mkdir(parents=True, exist_ok=True)
         return str(path)
 
