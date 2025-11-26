@@ -104,6 +104,106 @@ class DataAugmentor:
 
         return aug_rgb, aug_mask.astype(bool)
 
+    def crop_scale_with_offset(
+        self,
+        rgb: np.ndarray,
+        mask: np.ndarray,
+        scale_factor: float = 1.0,
+        offset_x: float = 0.0,
+        offset_y: float = 0.0,
+        padding: int = 20,
+        fill_color: Tuple[int, int, int] = (255, 255, 255)
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        마스크 영역을 크롭하여 확대/축소 후 위치 이동하여 원본 크기로 합성
+        전체 이미지 크기는 유지하되, 마스크 영역만 변환
+
+        Args:
+            rgb: RGB 이미지 (H, W, 3)
+            mask: 마스크 (H, W) - boolean or uint8
+            scale_factor: 확대/축소 배율 (0.5: 50% 축소, 2.0: 200% 확대)
+            offset_x: 가로 이동 비율 (-1.0 ~ 1.0, 이미지 너비 기준)
+            offset_y: 세로 이동 비율 (-1.0 ~ 1.0, 이미지 높이 기준)
+            padding: 크롭 시 추가 여백 (픽셀)
+            fill_color: 배경 색상 (R, G, B)
+
+        Returns:
+            (augmented_rgb, augmented_mask)
+        """
+        h, w = rgb.shape[:2]
+
+        # 1. 마스크 바운딩 박스 계산
+        x_min, y_min, x_max, y_max = self.compute_bbox_from_mask(mask)
+
+        # 패딩 추가
+        x_min = max(0, x_min - padding)
+        y_min = max(0, y_min - padding)
+        x_max = min(w, x_max + padding)
+        y_max = min(h, y_max + padding)
+
+        bbox_w = x_max - x_min
+        bbox_h = y_max - y_min
+
+        # 2. 마스크 영역 크롭
+        crop_rgb = rgb[y_min:y_max, x_min:x_max].copy()
+        crop_mask = mask[y_min:y_max, x_min:x_max].copy()
+
+        # 3. 크롭된 영역 스케일 변환
+        scaled_w = int(bbox_w * scale_factor)
+        scaled_h = int(bbox_h * scale_factor)
+
+        # 최소 크기 보장
+        scaled_w = max(1, scaled_w)
+        scaled_h = max(1, scaled_h)
+
+        scaled_rgb = cv2.resize(crop_rgb, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+        scaled_mask = cv2.resize(
+            crop_mask.astype(np.uint8),
+            (scaled_w, scaled_h),
+            interpolation=cv2.INTER_NEAREST
+        ).astype(bool)
+
+        # 4. 오프셋 계산 (이미지 크기 기준)
+        offset_px_x = int(w * offset_x)
+        offset_px_y = int(h * offset_y)
+
+        # 5. 원본 크기 캔버스 생성 (배경색으로 채움)
+        aug_rgb = np.full((h, w, 3), fill_color, dtype=np.uint8)
+        aug_mask = np.zeros((h, w), dtype=bool)
+
+        # 6. 변환된 크롭 영역을 캔버스 중앙 + 오프셋 위치에 배치
+        # 원래 bbox 중심 계산
+        orig_cx = (x_min + x_max) // 2
+        orig_cy = (y_min + y_max) // 2
+
+        # 배치 위치 (중심 + 오프셋)
+        paste_cx = orig_cx + offset_px_x
+        paste_cy = orig_cy + offset_px_y
+
+        # 좌상단 좌표
+        paste_x = paste_cx - scaled_w // 2
+        paste_y = paste_cy - scaled_h // 2
+
+        # 7. 경계 체크 및 붙여넣기
+        # 소스 영역 (스케일된 이미지에서 잘라낼 부분)
+        src_x1 = max(0, -paste_x)
+        src_y1 = max(0, -paste_y)
+        src_x2 = min(scaled_w, w - paste_x)
+        src_y2 = min(scaled_h, h - paste_y)
+
+        # 대상 영역 (캔버스에 붙일 위치)
+        dst_x1 = max(0, paste_x)
+        dst_y1 = max(0, paste_y)
+        dst_x2 = min(w, paste_x + scaled_w)
+        dst_y2 = min(h, paste_y + scaled_h)
+
+        # 유효한 영역이 있는 경우에만 붙여넣기
+        if src_x2 > src_x1 and src_y2 > src_y1 and dst_x2 > dst_x1 and dst_y2 > dst_y1:
+            aug_rgb[dst_y1:dst_y2, dst_x1:dst_x2] = scaled_rgb[src_y1:src_y2, src_x1:src_x2]
+            aug_mask[dst_y1:dst_y2, dst_x1:dst_x2] = scaled_mask[src_y1:src_y2, src_x1:src_x2]
+
+        return aug_rgb, aug_mask
+
     def rotate(
         self,
         rgb: np.ndarray,
@@ -238,6 +338,10 @@ class DataAugmentor:
             config: 증강 설정
                 {
                     'scale': float or None,
+                    'crop_scale': float or None,  # Crop-based scale (mutually exclusive with 'scale')
+                    'crop_offset_x': float or None,  # Horizontal offset ratio
+                    'crop_offset_y': float or None,  # Vertical offset ratio
+                    'crop_padding': int or None,
                     'rotation': float or None,
                     'flip': str or None,
                     'noise': float or None,
@@ -245,7 +349,7 @@ class DataAugmentor:
                     'contrast': float or None,
                     'color_jitter': bool,
                     'blur': int or None,
-                    'fill_color': str
+                    'fill_color': str or tuple
                 }
 
         Returns:
@@ -256,7 +360,33 @@ class DataAugmentor:
         applied = {}
 
         # 1. Geometric transforms (RGB + Mask)
-        if config.get('scale') is not None:
+        # Note: crop_scale and scale are mutually exclusive
+        if config.get('crop_scale') is not None:
+            # Crop-based scale augmentation (advanced mode)
+            scale = config['crop_scale']
+            offset_x = config.get('crop_offset_x', 0.0)
+            offset_y = config.get('crop_offset_y', 0.0)
+            padding = config.get('crop_padding', 20)
+            fill_color_val = config.get('fill_color', 'white')
+
+            # Convert fill_color string to RGB tuple
+            if fill_color_val == 'white':
+                fill_rgb = (255, 255, 255)
+            elif fill_color_val == 'black':
+                fill_rgb = (0, 0, 0)
+            elif isinstance(fill_color_val, tuple):
+                fill_rgb = fill_color_val
+            else:
+                fill_rgb = (255, 255, 255)
+
+            aug_rgb, aug_mask = self.crop_scale_with_offset(
+                aug_rgb, aug_mask, scale, offset_x, offset_y, padding, fill_rgb
+            )
+            applied['crop_scale'] = scale
+            applied['crop_offset'] = (offset_x, offset_y)
+
+        elif config.get('scale') is not None:
+            # Traditional scale augmentation (in-place)
             scale = config['scale']
             fill_color = config.get('fill_color', 'white')
             aug_rgb, aug_mask = self.scale_around_bbox(

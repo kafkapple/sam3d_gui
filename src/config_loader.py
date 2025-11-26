@@ -74,12 +74,29 @@ class ModelConfig:
 
     @property
     def default_data_dir(self) -> str:
-        """Get default data directory"""
-        path = Path(self.cfg.data.default_dir).expanduser()
-        # If relative path, resolve from project root
-        if not path.is_absolute():
-            path = (self.project_root / path).resolve()
-        return str(path)
+        """Get default data directory with fallback options"""
+        # Try multiple candidate paths
+        candidates = [
+            Path(self.cfg.data.default_dir).expanduser(),  # Config path
+            self.project_root.parent / "data" / "markerless_mouse",  # ../data/markerless_mouse
+            self.project_root / "data" / "markerless_mouse",  # ./data/markerless_mouse
+            Path.home() / "data" / "markerless_mouse",  # ~/data/markerless_mouse
+        ]
+
+        # Resolve relative paths from project root
+        resolved_candidates = []
+        for path in candidates:
+            if not path.is_absolute():
+                path = (self.project_root / path).resolve()
+            resolved_candidates.append(path)
+
+        # Return first existing path
+        for path in resolved_candidates:
+            if path.exists():
+                return str(path)
+
+        # If none exist, return first resolved path (will be created if needed)
+        return str(resolved_candidates[0])
 
     @property
     def output_dir(self) -> str:

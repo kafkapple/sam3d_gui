@@ -3569,6 +3569,40 @@ dataset:
 
                                 aug_flip_enable = gr.Checkbox(label="Enable Random Flip", value=True)
 
+                            with gr.Accordion("✂️ Crop-Based Scale Augmentation (Advanced)", open=True):
+                                aug_crop_enable = gr.Checkbox(
+                                    label="Enable Crop-Based Scale",
+                                    value=False,
+                                    info="Crop mask region, scale it, and paste on white background"
+                                )
+                                with gr.Row():
+                                    aug_crop_scale_min = gr.Slider(
+                                        label="Crop Scale Min",
+                                        minimum=0.3, maximum=1.0, value=0.5, step=0.05
+                                    )
+                                    aug_crop_scale_max = gr.Slider(
+                                        label="Crop Scale Max",
+                                        minimum=1.0, maximum=3.0, value=2.0, step=0.1
+                                    )
+
+                                with gr.Row():
+                                    aug_offset_x_max = gr.Slider(
+                                        label="Max Horizontal Offset (ratio)",
+                                        minimum=0.0, maximum=0.5, value=0.2, step=0.05,
+                                        info="Offset as ratio of image width"
+                                    )
+                                    aug_offset_y_max = gr.Slider(
+                                        label="Max Vertical Offset (ratio)",
+                                        minimum=0.0, maximum=0.5, value=0.2, step=0.05,
+                                        info="Offset as ratio of image height"
+                                    )
+
+                                aug_crop_padding = gr.Slider(
+                                    label="Crop Padding (pixels)",
+                                    minimum=0, maximum=100, value=20, step=5,
+                                    info="Extra padding around mask bbox"
+                                )
+
                             with gr.Accordion("🎨 Photometric Transforms (RGB only)", open=False):
                                 aug_noise_enable = gr.Checkbox(label="Enable Gaussian Noise", value=True)
                                 aug_noise_std = gr.Slider(
@@ -3623,6 +3657,33 @@ dataset:
                             )
 
                             aug_apply_btn = gr.Button("✨ Apply Augmentation", variant="primary", size="lg")
+
+                            # Quality Report
+                            gr.Markdown("#### 📊 Quality Analysis")
+                            with gr.Row():
+                                aug_analyze_btn = gr.Button(
+                                    "📈 Generate Quality Report",
+                                    variant="secondary",
+                                    size="lg",
+                                    info="Analyze diversity and quality of augmented images"
+                                )
+
+                            with gr.Accordion("⚙️ Analysis Settings", open=False):
+                                aug_feature_type = gr.Dropdown(
+                                    label="Feature Type",
+                                    choices=["simple", "resnet"],
+                                    value="simple",
+                                    info="Simple: histogram-based, ResNet: deep learning features"
+                                )
+                                aug_cluster_method = gr.Dropdown(
+                                    label="Clustering Method",
+                                    choices=["kmeans", "dbscan"],
+                                    value="kmeans"
+                                )
+                                aug_n_clusters = gr.Slider(
+                                    label="Number of Clusters",
+                                    minimum=2, maximum=10, value=5, step=1
+                                )
 
                         # Right column: Preview & Results
                         with gr.Column(scale=2):
@@ -3738,6 +3799,8 @@ dataset:
                     def generate_aug_preview(
                         rows, cols,
                         scale_enable, scale_min, scale_max, fill_color,
+                        crop_enable, crop_scale_min, crop_scale_max,
+                        offset_x_max, offset_y_max, crop_padding,
                         rotation_enable, rotation_min, rotation_max,
                         flip_enable,
                         noise_enable, noise_std,
@@ -3763,19 +3826,6 @@ dataset:
                             mask = cv2.imread(str(mask_files[0]), cv2.IMREAD_GRAYSCALE)
                             mask = mask > 127  # Convert to boolean
 
-                            # Build base config
-                            base_config = {
-                                'scale': scale_enable,
-                                'rotation': rotation_enable,
-                                'flip': flip_enable,
-                                'noise': noise_enable,
-                                'brightness': brightness_enable,
-                                'contrast': contrast_enable,
-                                'color_jitter': color_jitter_enable,
-                                'blur': blur_enable,
-                                'fill_color': fill_color
-                            }
-
                             # Generate random configs
                             num_variations = int(rows * cols)
                             configs = []
@@ -3784,7 +3834,13 @@ dataset:
                             for _ in range(num_variations):
                                 config = {'fill_color': fill_color}
 
-                                if scale_enable:
+                                # Crop-based scale takes precedence over regular scale
+                                if crop_enable:
+                                    config['crop_scale'] = random.uniform(crop_scale_min, crop_scale_max)
+                                    config['crop_offset_x'] = random.uniform(-offset_x_max, offset_x_max)
+                                    config['crop_offset_y'] = random.uniform(-offset_y_max, offset_y_max)
+                                    config['crop_padding'] = int(crop_padding)
+                                elif scale_enable:
                                     config['scale'] = random.uniform(scale_min, scale_max)
 
                                 if rotation_enable:
@@ -3826,6 +3882,8 @@ dataset:
                         inputs=[
                             aug_preview_rows, aug_preview_cols,
                             aug_scale_enable, aug_scale_min, aug_scale_max, aug_fill_color,
+                            aug_crop_enable, aug_crop_scale_min, aug_crop_scale_max,
+                            aug_offset_x_max, aug_offset_y_max, aug_crop_padding,
                             aug_rotation_enable, aug_rotation_min, aug_rotation_max,
                             aug_flip_enable,
                             aug_noise_enable, aug_noise_std,
@@ -3839,6 +3897,8 @@ dataset:
                     def apply_batch_augmentation(
                         multiplier, output_dir,
                         scale_enable, scale_min, scale_max, fill_color,
+                        crop_enable, crop_scale_min, crop_scale_max,
+                        offset_x_max, offset_y_max, crop_padding,
                         rotation_enable, rotation_min, rotation_max,
                         flip_enable,
                         noise_enable, noise_std,
@@ -3884,7 +3944,13 @@ dataset:
                                     # Random config
                                     config = {'fill_color': fill_color}
 
-                                    if scale_enable:
+                                    # Crop-based scale takes precedence
+                                    if crop_enable:
+                                        config['crop_scale'] = random.uniform(crop_scale_min, crop_scale_max)
+                                        config['crop_offset_x'] = random.uniform(-offset_x_max, offset_x_max)
+                                        config['crop_offset_y'] = random.uniform(-offset_y_max, offset_y_max)
+                                        config['crop_padding'] = int(crop_padding)
+                                    elif scale_enable:
                                         config['scale'] = random.uniform(scale_min, scale_max)
 
                                     if rotation_enable:
@@ -3969,6 +4035,8 @@ dataset:
                         inputs=[
                             aug_multiplier, aug_output_dir,
                             aug_scale_enable, aug_scale_min, aug_scale_max, aug_fill_color,
+                            aug_crop_enable, aug_crop_scale_min, aug_crop_scale_max,
+                            aug_offset_x_max, aug_offset_y_max, aug_crop_padding,
                             aug_rotation_enable, aug_rotation_min, aug_rotation_max,
                             aug_flip_enable,
                             aug_noise_enable, aug_noise_std,
@@ -3976,6 +4044,75 @@ dataset:
                             aug_contrast_enable, aug_color_jitter_enable, aug_blur_enable
                         ],
                         outputs=[aug_status, aug_progress]
+                    )
+
+                    # Generate quality report
+                    def generate_quality_report(
+                        output_dir, feature_type, cluster_method, n_clusters
+                    ):
+                        """Generate HTML quality report for augmented images"""
+                        try:
+                            from feature_clustering import analyze_augmentation_quality
+                            from html_report_generator import generate_html_report
+
+                            output_path = Path(output_dir)
+                            if not output_path.exists():
+                                return "❌ Output directory not found. Please run augmentation first."
+
+                            # Find all RGB images
+                            rgb_dir = output_path / "rgb"
+                            if not rgb_dir.exists():
+                                return "❌ RGB directory not found in output."
+
+                            image_paths = list(rgb_dir.glob("*.png")) + list(rgb_dir.glob("*.jpg"))
+
+                            if len(image_paths) < 2:
+                                return f"❌ Not enough images for analysis ({len(image_paths)} found, need at least 2)"
+
+                            # Run analysis
+                            msg = f"🔍 Analyzing {len(image_paths)} images...\n"
+                            results = analyze_augmentation_quality(
+                                image_paths=image_paths,
+                                output_dir=output_path,
+                                feature_type=feature_type,
+                                cluster_method=cluster_method,
+                                n_clusters=int(n_clusters),
+                                vis_method='tsne'
+                            )
+
+                            # Generate HTML report
+                            html_path = output_path / "quality_report.html"
+                            generate_html_report(
+                                results=results,
+                                output_path=html_path,
+                                include_images=True,
+                                max_images_per_cluster=5
+                            )
+
+                            metrics = results['metrics']
+                            msg += f"\n✅ Analysis complete!\n\n"
+                            msg += f"**Metrics:**\n"
+                            msg += f"- Clusters: {metrics['n_clusters']}\n"
+                            msg += f"- Silhouette Score: {metrics.get('silhouette_score', 0):.3f}\n"
+                            msg += f"- Davies-Bouldin Score: {metrics.get('davies_bouldin_score', 0):.3f}\n"
+                            msg += f"\n📄 **Report saved:** {html_path}\n"
+                            msg += f"Open in browser to view interactive results."
+
+                            return msg
+
+                        except Exception as e:
+                            import traceback
+                            return f"❌ Error: {str(e)}\n{traceback.format_exc()}"
+
+                    aug_analyze_btn.click(
+                        fn=generate_quality_report,
+                        inputs=[
+                            aug_output_dir,
+                            aug_feature_type,
+                            aug_cluster_method,
+                            aug_n_clusters
+                        ],
+                        outputs=[aug_status]
                     )
 
         return demo
