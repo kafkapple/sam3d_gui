@@ -3765,29 +3765,58 @@ dataset:
                                 return None, "⚠️ Please select a session"
 
                             session_path = Path(session_path)
+
+                            # Try both session metadata formats
+                            session_metadata_file = session_path / "session_metadata.json"
                             session_file = session_path / "session.json"
 
-                            if not session_file.exists():
-                                return None, f"❌ Session file not found: {session_file}"
+                            metadata = None
+                            if session_metadata_file.exists():
+                                with open(session_metadata_file, 'r') as f:
+                                    metadata = json.load(f)
+                            elif session_file.exists():
+                                with open(session_file, 'r') as f:
+                                    metadata = json.load(f)
+                            else:
+                                return None, f"❌ No session metadata found in {session_path}"
 
-                            # Load session metadata
-                            with open(session_file, 'r') as f:
-                                metadata = json.load(f)
+                            # Detect format (flat vs Fauna)
+                            flat_rgb_dir = session_path / "rgb"
+                            flat_mask_dir = session_path / "masks"
+                            is_flat_format = flat_rgb_dir.exists() and flat_mask_dir.exists()
+
+                            # Count frames
+                            frame_count = 0
+                            if is_flat_format:
+                                frame_count = len(list(flat_rgb_dir.glob("*.png")))
+                                format_type = "Flat (rgb/, masks/)"
+                            else:
+                                # Fauna format - count frame directories
+                                frame_dirs = [d for d in session_path.iterdir() if d.is_dir()]
+                                frame_count = len([d for d in frame_dirs if (d / "rgb.png").exists()])
+                                format_type = "Fauna (frame directories)"
 
                             # Store for augmentation
                             self.aug_session_path = session_path
                             self.aug_metadata = metadata
 
+                            session_type = metadata.get('session_type', 'unknown')
+                            fauna_compat = metadata.get('fauna_compatible', False)
+
                             info = f"""
 ✅ Session loaded successfully
 
 **Session ID:** {metadata.get('session_id', 'N/A')}
-**Frames:** {metadata.get('num_frames', 0)} frames
-**Created:** {metadata.get('created_at', 'N/A')}
+**Type:** {session_type}
+**Format:** {format_type}
+**Fauna Compatible:** {'✅' if fauna_compat else '⚠️'}
+**Frames:** {frame_count} frames
+**Created:** {metadata.get('timestamp', metadata.get('created_at', 'N/A'))}
 """
                             return None, info
                         except Exception as e:
-                            return None, f"❌ Error loading session: {str(e)}"
+                            import traceback
+                            return None, f"❌ Error loading session: {str(e)}\n{traceback.format_exc()}"
 
                     aug_load_session_btn.click(
                         fn=load_aug_session,
@@ -3812,9 +3841,28 @@ dataset:
                             if not hasattr(self, 'aug_session_path'):
                                 return None, "❌ Please load a session first"
 
-                            # Load first frame and mask as example
-                            rgb_files = sorted((self.aug_session_path / "rgb").glob("*.png"))
-                            mask_files = sorted((self.aug_session_path / "masks").glob("*.png"))
+                            # Load first frame and mask (support both flat and Fauna formats)
+                            rgb_files = []
+                            mask_files = []
+
+                            # Check for flat format
+                            flat_rgb_dir = self.aug_session_path / "rgb"
+                            flat_mask_dir = self.aug_session_path / "masks"
+
+                            if flat_rgb_dir.exists() and flat_mask_dir.exists():
+                                # Flat format
+                                rgb_files = sorted(flat_rgb_dir.glob("*.png"))
+                                mask_files = sorted(flat_mask_dir.glob("*.png"))
+                            else:
+                                # Fauna format
+                                frame_dirs = sorted([d for d in self.aug_session_path.iterdir() if d.is_dir()])
+                                for frame_dir in frame_dirs:
+                                    rgb_file = frame_dir / "rgb.png"
+                                    mask_file = frame_dir / "mask.png"
+                                    if rgb_file.exists() and mask_file.exists():
+                                        rgb_files.append(rgb_file)
+                                        mask_files.append(mask_file)
+                                        break  # Just need first frame for preview
 
                             if not rgb_files or not mask_files:
                                 return None, "❌ No RGB or mask files found in session"
@@ -3913,15 +3961,27 @@ dataset:
                             output_path = Path(output_dir)
                             output_path.mkdir(parents=True, exist_ok=True)
 
-                            # Create subdirectories
-                            rgb_out = output_path / "rgb"
-                            mask_out = output_path / "masks"
-                            rgb_out.mkdir(exist_ok=True)
-                            mask_out.mkdir(exist_ok=True)
+                            # Load all frames (support both flat and Fauna formats)
+                            rgb_files = []
+                            mask_files = []
 
-                            # Load all frames
-                            rgb_files = sorted((self.aug_session_path / "rgb").glob("*.png"))
-                            mask_files = sorted((self.aug_session_path / "masks").glob("*.png"))
+                            # Check for flat format (rgb/ and masks/ folders)
+                            flat_rgb_dir = self.aug_session_path / "rgb"
+                            flat_mask_dir = self.aug_session_path / "masks"
+
+                            if flat_rgb_dir.exists() and flat_mask_dir.exists():
+                                # Flat format
+                                rgb_files = sorted(flat_rgb_dir.glob("*.png"))
+                                mask_files = sorted(flat_mask_dir.glob("*.png"))
+                            else:
+                                # Fauna format (frame directories)
+                                frame_dirs = sorted([d for d in self.aug_session_path.iterdir() if d.is_dir()])
+                                for frame_dir in frame_dirs:
+                                    rgb_file = frame_dir / "rgb.png"
+                                    mask_file = frame_dir / "mask.png"
+                                    if rgb_file.exists() and mask_file.exists():
+                                        rgb_files.append(rgb_file)
+                                        mask_files.append(mask_file)
 
                             total_frames = len(rgb_files)
                             total_outputs = total_frames * int(multiplier)
@@ -3977,16 +4037,22 @@ dataset:
                                     # Apply augmentation
                                     aug_rgb, aug_mask, applied = self.augmentor.augment(rgb, mask, config)
 
-                                    # Save with consistent naming: frame{idx:04d}_aug{aug_idx:02d}.png
-                                    output_name = f"frame{idx:04d}_aug{aug_idx:02d}.png"
+                                    # Save in Fauna-compatible format (frame directories)
+                                    # Get original frame name (without extension)
+                                    original_basename = rgb_file.stem
 
-                                    # Save RGB
+                                    # Create frame directory: {original_name}_aug{idx:02d}
+                                    frame_dir_name = f"{original_basename}_aug{aug_idx:02d}"
+                                    frame_dir = output_path / frame_dir_name
+                                    frame_dir.mkdir(parents=True, exist_ok=True)
+
+                                    # Save RGB as rgb.png
                                     rgb_bgr = cv2.cvtColor(aug_rgb, cv2.COLOR_RGB2BGR)
-                                    cv2.imwrite(str(rgb_out / output_name), rgb_bgr)
+                                    cv2.imwrite(str(frame_dir / "rgb.png"), rgb_bgr)
 
-                                    # Save mask
+                                    # Save mask as mask.png
                                     mask_img = (aug_mask * 255).astype(np.uint8)
-                                    cv2.imwrite(str(mask_out / output_name), mask_img)
+                                    cv2.imwrite(str(frame_dir / "mask.png"), mask_img)
 
                                     processed += 1
 
@@ -3996,22 +4062,36 @@ dataset:
 
                             # Save metadata
                             metadata = {
+                                'session_id': f"augmented_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                                'session_type': 'augmented',
                                 'source_session': str(self.aug_session_path),
                                 'original_frames': total_frames,
                                 'multiplier': int(multiplier),
                                 'total_augmented': processed,
-                                'augmentation_config': {
+                                'fauna_compatible': True,
+                                'augmentation_params': {
+                                    'crop_scale': {'enabled': crop_enable, 'min': crop_scale_min, 'max': crop_scale_max} if crop_enable else None,
                                     'scale': {'enabled': scale_enable, 'min': scale_min, 'max': scale_max} if scale_enable else None,
                                     'rotation': {'enabled': rotation_enable, 'min': rotation_min, 'max': rotation_max} if rotation_enable else None,
                                     'flip': flip_enable,
                                     'noise': {'enabled': noise_enable, 'std': noise_std} if noise_enable else None,
                                     'brightness': {'enabled': brightness_enable, 'min': brightness_min, 'max': brightness_max} if brightness_enable else None,
-                                    'fill_color': fill_color
+                                    'contrast': contrast_enable,
+                                    'color_jitter': color_jitter_enable,
+                                    'blur': blur_enable,
+                                    'fill_color': fill_color,
+                                    'offset_x_max': offset_x_max,
+                                    'offset_y_max': offset_y_max,
+                                    'crop_padding': int(crop_padding)
                                 },
-                                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             }
 
+                            # Save as both augmentation_metadata.json and session_metadata.json
                             with open(output_path / "augmentation_metadata.json", 'w') as f:
+                                json.dump(metadata, f, indent=2)
+
+                            with open(output_path / "session_metadata.json", 'w') as f:
                                 json.dump(metadata, f, indent=2)
 
                             final_msg = f"""
@@ -4059,12 +4139,21 @@ dataset:
                             if not output_path.exists():
                                 return "❌ Output directory not found. Please run augmentation first."
 
-                            # Find all RGB images
-                            rgb_dir = output_path / "rgb"
-                            if not rgb_dir.exists():
-                                return "❌ RGB directory not found in output."
+                            # Find all RGB images (support both flat and Fauna formats)
+                            image_paths = []
 
-                            image_paths = list(rgb_dir.glob("*.png")) + list(rgb_dir.glob("*.jpg"))
+                            # Check for flat format
+                            rgb_dir = output_path / "rgb"
+                            if rgb_dir.exists():
+                                # Flat format
+                                image_paths = list(rgb_dir.glob("*.png")) + list(rgb_dir.glob("*.jpg"))
+                            else:
+                                # Fauna format - collect rgb.png from all frame directories
+                                frame_dirs = [d for d in output_path.iterdir() if d.is_dir()]
+                                for frame_dir in frame_dirs:
+                                    rgb_file = frame_dir / "rgb.png"
+                                    if rgb_file.exists():
+                                        image_paths.append(rgb_file)
 
                             if len(image_paths) < 2:
                                 return f"❌ Not enough images for analysis ({len(image_paths)} found, need at least 2)"
