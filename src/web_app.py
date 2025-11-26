@@ -148,8 +148,10 @@ class SAMInteractiveWebApp:
             self.default_data_dir = config.default_data_dir
             self.default_output_dir = config.output_dir
         else:
-            self.default_data_dir = "/home/joon/dev/data/markerless_mouse/"
-            self.default_output_dir = "/home/joon/dev/sam3d_gui/outputs/"
+            # Fallback: relative to project root
+            project_root = Path(__file__).parent.parent
+            self.default_data_dir = str(project_root / "data" / "markerless_mouse")
+            self.default_output_dir = str(project_root / "outputs")
 
         # Data Augmentor 초기화
         self.augmentor = DataAugmentor()
@@ -1721,7 +1723,9 @@ class SAMInteractiveWebApp:
         if self.config:
             checkpoint_dir = Path(self.config.sam3d_checkpoint_dir).expanduser()
         else:
-            checkpoint_dir = Path("~/dev/sam-3d-objects/checkpoints/hf").expanduser()
+            # Fallback: relative to project root
+            project_root = Path(__file__).parent.parent
+            checkpoint_dir = project_root / "external" / "sam-3d-objects" / "checkpoints" / "hf"
 
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1799,7 +1803,9 @@ class SAMInteractiveWebApp:
                 checkpoint_dir = Path(self.config.sam3d_checkpoint_dir).expanduser()
                 print(f"✓ Config에서 checkpoint 경로 로드: {checkpoint_dir}")
             else:
-                checkpoint_dir = Path("~/dev/sam-3d-objects/checkpoints/hf/checkpoints").expanduser()
+                # Fallback: relative to project root
+                project_root = Path(__file__).parent.parent
+                checkpoint_dir = project_root / "external" / "sam-3d-objects" / "checkpoints" / "hf"
                 print(f"✓ 기본 checkpoint 경로 사용: {checkpoint_dir}")
 
             print(f"✓ Checkpoint 존재 확인 중: {checkpoint_dir}")
@@ -1817,13 +1823,13 @@ class SAMInteractiveWebApp:
 
 **수동 다운로드 방법:**
 ```bash
-cd /home/joon/dev/sam3d_gui
+# 프로젝트 루트로 이동 후
 ./download_sam3d.sh
 ```
 
 또는 다음 명령어:
 ```bash
-cd ~/dev/sam-3d-objects
+cd external/sam-3d-objects
 git clone https://huggingface.co/facebook/sam-3d-objects checkpoints/hf
 ```
 """

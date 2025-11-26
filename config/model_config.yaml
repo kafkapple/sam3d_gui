@@ -38,8 +38,9 @@ sam3d:
 
 # 데이터 경로 설정
 data:
-  default_dir: "${oc.env:HOME}/dev/data/markerless_mouse/"
-  output_dir: "${oc.env:HOME}/dev/sam3d_gui/outputs/"
+  # 프로젝트 루트 기준 상대 경로로 다중 서버 지원
+  default_dir: "data/markerless_mouse/"
+  output_dir: "outputs/"
 
 # 추론 설정
 inference:

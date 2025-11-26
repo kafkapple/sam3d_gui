@@ -5,7 +5,10 @@ Tests lazy loading, memory cleanup, and FP16 support
 """
 import sys
 import os
-sys.path.insert(0, '/home/joon/dev/sam3d_gui/src')
+from pathlib import Path
+
+# Add src to path (relative to this file)
+sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import numpy as np
 import torch
