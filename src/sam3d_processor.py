@@ -23,6 +23,35 @@ def _apply_sam3d_patches():
     """SAM3D import 전에 호환성 패치 적용"""
     from unittest.mock import MagicMock
 
+    from enum import Enum
+
+    # torch._dynamo mock (PyTorch 2.0 호환성)
+    if not hasattr(torch, '_dynamo'):
+        torch._dynamo = MagicMock()
+        torch._dynamo.disable = lambda: lambda fn: fn
+
+    # torch.nn.attention mock (PyTorch 2.2+ 기능)
+    if not hasattr(torch.nn, 'attention'):
+        class SDPBackend(Enum):
+            FLASH_ATTENTION = 1
+            EFFICIENT_ATTENTION = 2
+            MATH = 3
+            CUDNN_ATTENTION = 4
+
+        class sdpa_kernel:
+            def __init__(self, backend):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        attention_mock = MagicMock()
+        attention_mock.SDPBackend = SDPBackend
+        attention_mock.sdpa_kernel = sdpa_kernel
+        torch.nn.attention = attention_mock
+        sys.modules["torch.nn.attention"] = attention_mock
+
     # torch._dynamo mock (PyTorch 2.0 호환성)
     if not hasattr(torch, '_dynamo'):
         torch._dynamo = MagicMock()
@@ -39,11 +68,21 @@ def _apply_sam3d_patches():
     sys.modules["kaolin.utils.testing"] = kaolin_mock
 
     # lightning mock (pytorch-lightning 의존성 단순화)
+    # isinstance() 체크를 위해 실제 클래스 타입 필요
+    class MockLightningModule:
+        """Mock class for pl.LightningModule isinstance() checks"""
+        pass
+
     lightning_mock = MagicMock()
+    lightning_mock.LightningModule = MockLightningModule
+
+    lightning_pytorch_mock = MagicMock()
+    lightning_pytorch_mock.LightningModule = MockLightningModule
+
     sys.modules["lightning"] = lightning_mock
-    sys.modules["lightning.pytorch"] = lightning_mock
-    sys.modules["lightning.pytorch.utilities"] = lightning_mock
-    sys.modules["lightning.pytorch.utilities.consolidate_checkpoint"] = lightning_mock
+    sys.modules["lightning.pytorch"] = lightning_pytorch_mock
+    sys.modules["lightning.pytorch.utilities"] = MagicMock()
+    sys.modules["lightning.pytorch.utilities.consolidate_checkpoint"] = MagicMock()
 
 # 패치 적용
 _apply_sam3d_patches()
