@@ -21,6 +21,229 @@ class DataAugmentor:
 
     def __init__(self):
         self.transform_history = []
+        # Background image support
+        self.background_images: List[np.ndarray] = []
+        self.background_folder: Optional[Path] = None
+        self._bg_index_queue: List[int] = []  # Uniform sampling queue
+
+    # ========== Background Image Methods ==========
+
+    def load_background_images(self, folder_path: str) -> int:
+        """
+        배경 이미지 폴더 로드
+
+        Args:
+            folder_path: 배경 이미지 폴더 경로
+
+        Returns:
+            로드된 이미지 개수
+        """
+        folder = Path(folder_path)
+        if not folder.exists():
+            return 0
+
+        self.background_folder = folder
+        self.background_images = []
+
+        # 이미지 파일 확장자
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+        image_files = [f for f in folder.iterdir()
+                       if f.is_file() and f.suffix.lower() in image_extensions]
+
+        for img_path in image_files:
+            try:
+                img = cv2.imread(str(img_path))
+                if img is not None:
+                    # BGR → RGB 변환 (cv2.imread는 BGR로 로드)
+                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    self.background_images.append(img_rgb)
+            except Exception as e:
+                print(f"Warning: Failed to load {img_path}: {e}")
+
+        # Uniform sampling 큐 초기화
+        self._reset_bg_index_queue()
+
+        return len(self.background_images)
+
+    def _reset_bg_index_queue(self):
+        """배경 인덱스 큐를 셔플하여 초기화 (Uniform sampling)"""
+        if len(self.background_images) > 0:
+            self._bg_index_queue = list(range(len(self.background_images)))
+            random.shuffle(self._bg_index_queue)
+        else:
+            self._bg_index_queue = []
+
+    def _get_next_bg_index(self) -> int:
+        """다음 배경 인덱스 반환 (Uniform sampling)"""
+        if not self._bg_index_queue:
+            self._reset_bg_index_queue()
+        if not self._bg_index_queue:
+            return 0
+        return self._bg_index_queue.pop()
+
+    def get_background(
+        self,
+        target_size: Tuple[int, int],
+        use_image: bool = True,
+        fill_color: Tuple[int, int, int] = (255, 255, 255)
+    ) -> np.ndarray:
+        """
+        배경 이미지 또는 단색 배경 반환
+
+        Args:
+            target_size: (height, width)
+            use_image: True면 이미지 배경, False면 단색
+            fill_color: 단색 배경일 경우 RGB 색상
+
+        Returns:
+            배경 이미지 (H, W, 3) RGB
+        """
+        h, w = target_size
+
+        if use_image and len(self.background_images) > 0:
+            # Uniform sampling으로 배경 선택
+            bg_idx = self._get_next_bg_index()
+            bg_img = self.background_images[bg_idx]
+
+            # 크기 조정
+            bg_h, bg_w = bg_img.shape[:2]
+            if bg_h != h or bg_w != w:
+                bg_img = cv2.resize(bg_img, (w, h), interpolation=cv2.INTER_LINEAR)
+
+            return bg_img.copy()
+        else:
+            # 단색 배경
+            return np.full((h, w, 3), fill_color, dtype=np.uint8)
+
+    def composite_with_background(
+        self,
+        rgb: np.ndarray,
+        mask: np.ndarray,
+        use_bg_image: bool = True,
+        bg_image_ratio: float = 0.5,
+        fill_color: Tuple[int, int, int] = (255, 255, 255)
+    ) -> np.ndarray:
+        """
+        마스크 영역(foreground)을 유지하고 배경을 교체
+
+        Args:
+            rgb: RGB 이미지 (H, W, 3)
+            mask: 마스크 (H, W) - True인 영역이 foreground
+            use_bg_image: True면 배경 이미지 사용 가능
+            bg_image_ratio: 배경 이미지 사용 확률 (0.0~1.0)
+            fill_color: 단색 배경 RGB
+
+        Returns:
+            합성된 이미지 (foreground + new background)
+        """
+        h, w = rgb.shape[:2]
+        mask_bool = mask.astype(bool) if mask.dtype != bool else mask
+
+        # 배경 선택: 이미지 또는 단색
+        use_image = (
+            use_bg_image and
+            len(self.background_images) > 0 and
+            random.random() < bg_image_ratio
+        )
+
+        background = self.get_background((h, w), use_image=use_image, fill_color=fill_color)
+
+        # 합성: foreground(mask=True) 유지, background(mask=False) 교체
+        result = background.copy()
+        result[mask_bool] = rgb[mask_bool]
+
+        return result
+
+    def prevent_clipping(
+        self,
+        rgb: np.ndarray,
+        mask: np.ndarray,
+        fill_color: Tuple[int, int, int] = (255, 255, 255)
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Object가 이미지 경계에서 잘리지 않도록 오프셋 적용
+
+        마스크 영역이 이미지 가장자리에 닿아있으면,
+        반대 방향으로 이동하여 전체가 보이도록 함
+
+        Args:
+            rgb: RGB 이미지 (H, W, 3)
+            mask: 마스크 (H, W) - boolean or uint8
+            fill_color: 빈 공간 채울 색상 (R, G, B)
+
+        Returns:
+            (adjusted_rgb, adjusted_mask)
+        """
+        h, w = rgb.shape[:2]
+
+        # 마스크를 boolean으로 변환
+        mask_bool = mask.astype(bool) if mask.dtype != bool else mask
+
+        # 마스크가 비어있으면 그대로 반환
+        if not mask_bool.any():
+            return rgb, mask
+
+        # 마스크의 바운딩 박스 계산
+        rows = np.any(mask_bool, axis=1)
+        cols = np.any(mask_bool, axis=0)
+
+        y_indices = np.where(rows)[0]
+        x_indices = np.where(cols)[0]
+
+        y_min, y_max = y_indices[0], y_indices[-1]
+        x_min, x_max = x_indices[0], x_indices[-1]
+
+        # 필요한 오프셋 계산
+        offset_x = 0
+        offset_y = 0
+
+        # 좌측 경계에 닿음 → 오른쪽으로 이동
+        if x_min == 0:
+            # 마스크 폭 확인
+            mask_width = x_max - x_min + 1
+            if mask_width < w:
+                offset_x = min(10, (w - mask_width) // 2)  # 최대 10px 또는 가능한 만큼
+
+        # 우측 경계에 닿음 → 왼쪽으로 이동
+        if x_max == w - 1:
+            mask_width = x_max - x_min + 1
+            if mask_width < w:
+                offset_x = -min(10, (w - mask_width) // 2)
+
+        # 상단 경계에 닿음 → 아래로 이동
+        if y_min == 0:
+            mask_height = y_max - y_min + 1
+            if mask_height < h:
+                offset_y = min(10, (h - mask_height) // 2)
+
+        # 하단 경계에 닿음 → 위로 이동
+        if y_max == h - 1:
+            mask_height = y_max - y_min + 1
+            if mask_height < h:
+                offset_y = -min(10, (h - mask_height) // 2)
+
+        # 오프셋이 0이면 그대로 반환
+        if offset_x == 0 and offset_y == 0:
+            return rgb, mask
+
+        # 변환 행렬 생성 (평행 이동)
+        M = np.float32([[1, 0, offset_x], [0, 1, offset_y]])
+
+        # RGB 이동
+        adjusted_rgb = cv2.warpAffine(
+            rgb, M, (w, h),
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=fill_color
+        )
+
+        # Mask 이동
+        adjusted_mask = cv2.warpAffine(
+            mask_bool.astype(np.uint8), M, (w, h),
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+
+        return adjusted_rgb, adjusted_mask.astype(bool)
 
     def compute_bbox_from_mask(self, mask: np.ndarray) -> Tuple[int, int, int, int]:
         """
@@ -39,7 +262,8 @@ class DataAugmentor:
         y_min, y_max = np.where(rows)[0][[0, -1]]
         x_min, x_max = np.where(cols)[0][[0, -1]]
 
-        return x_min, y_min, x_max, y_max
+        # Convert numpy int to Python int (cv2.getRotationMatrix2D requires native types)
+        return int(x_min), int(y_min), int(x_max), int(y_max)
 
     def scale_around_bbox(
         self,
@@ -404,6 +628,22 @@ class DataAugmentor:
             aug_rgb, aug_mask = self.flip(aug_rgb, aug_mask, mode)
             applied['flip'] = mode
 
+        # 1.5. Prevent clipping (경계 잘림 방지)
+        if config.get('prevent_clipping', False):
+            # fill_color 결정
+            fill_color_val = config.get('fill_color', 'white')
+            if fill_color_val == 'white':
+                fill_rgb = (255, 255, 255)
+            elif fill_color_val == 'black':
+                fill_rgb = (0, 0, 0)
+            elif isinstance(fill_color_val, tuple):
+                fill_rgb = fill_color_val
+            else:
+                fill_rgb = (255, 255, 255)
+
+            aug_rgb, aug_mask = self.prevent_clipping(aug_rgb, aug_mask, fill_rgb)
+            applied['prevent_clipping'] = True
+
         # 2. Photometric transforms (RGB만)
         if config.get('noise') is not None:
             std = config['noise']
@@ -428,6 +668,30 @@ class DataAugmentor:
             kernel = config['blur']
             aug_rgb = self.gaussian_blur(aug_rgb, kernel)
             applied['blur'] = kernel
+
+        # 3. Background replacement (최종 단계)
+        if config.get('replace_background', False):
+            use_bg_image = config.get('use_bg_image', True)
+            bg_image_ratio = config.get('bg_image_ratio', 0.5)
+
+            # fill_color 결정
+            fill_color_val = config.get('fill_color', 'white')
+            if fill_color_val == 'white':
+                fill_rgb = (255, 255, 255)
+            elif fill_color_val == 'black':
+                fill_rgb = (0, 0, 0)
+            elif isinstance(fill_color_val, tuple):
+                fill_rgb = fill_color_val
+            else:
+                fill_rgb = (255, 255, 255)
+
+            aug_rgb = self.composite_with_background(
+                aug_rgb, aug_mask,
+                use_bg_image=use_bg_image,
+                bg_image_ratio=bg_image_ratio,
+                fill_color=fill_rgb
+            )
+            applied['replace_background'] = True
 
         return aug_rgb, aug_mask, applied
 
@@ -463,17 +727,13 @@ class DataAugmentor:
             # 증강 수행
             aug_rgb, aug_mask, applied = self.augment(rgb, mask, config)
 
-            # 마스크 오버레이
-            overlay = aug_rgb.copy()
-            overlay[aug_mask] = overlay[aug_mask] * 0.7 + np.array([0, 255, 0]) * 0.3
-
-            # 그리드에 배치
+            # 그리드에 배치 (녹색 오버레이 없이 실제 결과 표시)
             y_start = row * h
             y_end = (row + 1) * h
             x_start = col * w
             x_end = (col + 1) * w
 
-            grid[y_start:y_end, x_start:x_end] = overlay.astype(np.uint8)
+            grid[y_start:y_end, x_start:x_end] = aug_rgb.astype(np.uint8)
 
         return grid
 

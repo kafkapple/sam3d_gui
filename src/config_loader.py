@@ -111,3 +111,34 @@ class ModelConfig:
     def get_visualization_config(self):
         """Get visualization configuration"""
         return self.cfg.visualization
+
+    # ========== Augmentation Config ==========
+
+    @property
+    def augmentation_background_folder(self) -> str:
+        """Get augmentation background folder path"""
+        if hasattr(self.cfg, 'augmentation') and hasattr(self.cfg.augmentation, 'background_folder'):
+            path = Path(self.cfg.augmentation.background_folder).expanduser()
+            return str(path)
+        return ""
+
+    @property
+    def augmentation_default_bg_ratio(self) -> float:
+        """Get default background image usage ratio"""
+        if hasattr(self.cfg, 'augmentation') and hasattr(self.cfg.augmentation, 'default_bg_image_ratio'):
+            return float(self.cfg.augmentation.default_bg_image_ratio)
+        return 0.5
+
+    @property
+    def augmentation_default_fill_color(self) -> str:
+        """Get default fill color for augmentation"""
+        if hasattr(self.cfg, 'augmentation') and hasattr(self.cfg.augmentation, 'default_fill_color'):
+            return str(self.cfg.augmentation.default_fill_color)
+        return "white"
+
+    @property
+    def augmentation_prevent_clipping(self) -> bool:
+        """Get default prevent_clipping setting"""
+        if hasattr(self.cfg, 'augmentation') and hasattr(self.cfg.augmentation, 'prevent_clipping'):
+            return bool(self.cfg.augmentation.prevent_clipping)
+        return True

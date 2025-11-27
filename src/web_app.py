@@ -123,6 +123,10 @@ class SAMInteractiveWebApp:
     - 수동 세그멘테이션 → Propagation → 3D mesh
     """
 
+    # SAM2 체크포인트 기본 경로
+    SAM2_CHECKPOINT_PATH = Path(__file__).parent.parent / "checkpoints" / "sam2" / "sam2_hiera_large.pt"
+    SAM2_DOWNLOAD_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
+
     def __init__(self):
         # Config-based initialization
         self.config = config
@@ -193,6 +197,9 @@ class SAMInteractiveWebApp:
         self.current_mask = None
         self.tracking_result = None
 
+        # 현재 로드된 세션 경로 (덮어쓰기용)
+        self.current_session_path = None
+
         # Default paths from config
         if config:
             self.default_data_dir = config.default_data_dir
@@ -229,6 +236,188 @@ class SAMInteractiveWebApp:
             except Exception as e:
                 print(f"Warning: Failed to initialize Lite Annotator: {e}")
                 self.lite_annotator = None
+
+    def check_sam2_available(self) -> Tuple[bool, str]:
+        """
+        SAM2 모델 사용 가능 여부 확인
+
+        Returns:
+            (available, status_message)
+        """
+        if not SAM2_AVAILABLE:
+            return False, "SAM2 패키지가 설치되지 않았습니다. `pip install sam2` 실행 필요"
+
+        if self.sam2_predictor is None or self.sam2_video_predictor is None:
+            checkpoint = self.SAM2_CHECKPOINT_PATH
+            if not checkpoint.exists():
+                return False, f"SAM2 체크포인트가 없습니다: {checkpoint}"
+            return False, "SAM2 모델이 로드되지 않았습니다"
+
+        return True, f"SAM2 모델 사용 가능 ({self.sam2_device})"
+
+    def download_sam2_checkpoint(self, progress_callback=None) -> Tuple[bool, str]:
+        """
+        SAM2 체크포인트 다운로드
+
+        Args:
+            progress_callback: 진행률 콜백 함수 (0.0 ~ 1.0)
+
+        Returns:
+            (success, message)
+        """
+        import urllib.request
+        import ssl
+
+        checkpoint_path = self.SAM2_CHECKPOINT_PATH
+        checkpoint_dir = checkpoint_path.parent
+
+        # 이미 존재하면 스킵
+        if checkpoint_path.exists():
+            return True, f"체크포인트가 이미 존재합니다: {checkpoint_path}"
+
+        try:
+            # 디렉토리 생성
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+            print(f"📥 SAM2 체크포인트 다운로드 시작...")
+            print(f"   URL: {self.SAM2_DOWNLOAD_URL}")
+            print(f"   저장 위치: {checkpoint_path}")
+
+            # SSL context 설정
+            ssl_context = ssl.create_default_context()
+
+            # 진행률 표시를 위한 다운로드
+            def reporthook(block_num, block_size, total_size):
+                if total_size > 0:
+                    downloaded = block_num * block_size
+                    percent = min(downloaded / total_size, 1.0)
+                    if progress_callback:
+                        progress_callback(percent)
+                    # 10% 단위로 출력
+                    if int(percent * 10) > int((downloaded - block_size) / total_size * 10):
+                        print(f"   다운로드 진행: {percent*100:.0f}%")
+
+            urllib.request.urlretrieve(
+                self.SAM2_DOWNLOAD_URL,
+                str(checkpoint_path),
+                reporthook=reporthook
+            )
+
+            # 파일 크기 확인
+            file_size = checkpoint_path.stat().st_size / (1024 * 1024)
+            print(f"✅ SAM2 다운로드 완료: {file_size:.1f} MB")
+
+            return True, f"SAM2 체크포인트 다운로드 완료 ({file_size:.1f} MB)"
+
+        except Exception as e:
+            # 실패 시 부분 다운로드 파일 삭제
+            if checkpoint_path.exists():
+                checkpoint_path.unlink()
+            return False, f"다운로드 실패: {str(e)}"
+
+    def load_sam2_models(self) -> Tuple[bool, str]:
+        """
+        SAM2 모델 로드 (체크포인트가 있어야 함)
+
+        Returns:
+            (success, message)
+        """
+        if not SAM2_AVAILABLE:
+            return False, "SAM2 패키지가 설치되지 않았습니다"
+
+        checkpoint = self.SAM2_CHECKPOINT_PATH
+
+        # config에서 경로 가져오기 (있으면)
+        if self.config:
+            config_checkpoint = Path(self.config.sam2_checkpoint)
+            if config_checkpoint.exists():
+                checkpoint = config_checkpoint
+
+        if not checkpoint.exists():
+            return False, f"SAM2 체크포인트를 찾을 수 없습니다: {checkpoint}"
+
+        try:
+            from sam2.build_sam import build_sam2, build_sam2_video_predictor
+
+            # Device 설정
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.sam2_device = device
+
+            model_cfg = self.config.sam2_config if self.config else "sam2_hiera_l.yaml"
+
+            print(f"🔄 SAM2 모델 로딩 중... (device: {device})")
+
+            # Image predictor
+            sam2_model = build_sam2(model_cfg, str(checkpoint), device=device)
+            self.sam2_predictor = SAM2ImagePredictor(sam2_model)
+
+            # Video predictor
+            self.sam2_video_predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
+
+            print(f"✅ SAM2 모델 로드 완료")
+            return True, f"SAM2 모델 로드 완료 (device: {device})"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return False, f"SAM2 로드 실패: {str(e)}"
+
+    def _get_sam2_status_markdown(self) -> str:
+        """SAM2 상태를 Markdown 형식으로 반환 (모델 정보 포함)"""
+        # 모델 정보
+        model_name = "Hiera Large"
+        model_size = "~897MB"
+
+        if self.sam2_predictor is not None and self.sam2_video_predictor is not None:
+            return f"✅ **SAM2** ({model_name}) - {self.sam2_device}"
+        elif not SAM2_AVAILABLE:
+            return f"❌ **SAM2**: 패키지 미설치 (`pip install sam2`)"
+        else:
+            checkpoint = self.SAM2_CHECKPOINT_PATH
+            if self.config:
+                config_checkpoint = Path(self.config.sam2_checkpoint)
+                if config_checkpoint.exists():
+                    checkpoint = config_checkpoint
+
+            if not checkpoint.exists():
+                return f"⚠️ **SAM2** ({model_name}, {model_size}) - 다운로드 필요"
+            else:
+                return f"⚠️ **SAM2** ({model_name}) - 버튼 클릭하여 로드"
+
+    def ensure_sam2_ready(self, progress_callback=None) -> Tuple[bool, str]:
+        """
+        SAM2 모델이 준비되었는지 확인하고, 없으면 다운로드 후 로드
+
+        Args:
+            progress_callback: 진행률 콜백
+
+        Returns:
+            (success, message)
+        """
+        # 이미 로드되어 있으면 OK
+        if self.sam2_predictor is not None and self.sam2_video_predictor is not None:
+            return True, "SAM2 모델 사용 준비됨"
+
+        if not SAM2_AVAILABLE:
+            return False, "❌ SAM2 패키지가 설치되지 않았습니다.\n\n`pip install sam2` 명령으로 설치하세요."
+
+        # 체크포인트 확인
+        checkpoint = self.SAM2_CHECKPOINT_PATH
+        if self.config:
+            config_checkpoint = Path(self.config.sam2_checkpoint)
+            if config_checkpoint.exists():
+                checkpoint = config_checkpoint
+
+        # 체크포인트 없으면 다운로드
+        if not checkpoint.exists():
+            print("📥 SAM2 체크포인트가 없습니다. 자동 다운로드를 시작합니다...")
+            success, msg = self.download_sam2_checkpoint(progress_callback)
+            if not success:
+                return False, f"❌ SAM2 다운로드 실패: {msg}"
+
+        # 모델 로드
+        success, msg = self.load_sam2_models()
+        return success, msg
 
     def unload_sam2_models(self):
         """
@@ -692,11 +881,34 @@ class SAMInteractiveWebApp:
             total_processed_frames = 0
             video_results = []
 
-            progress(0, desc=f"Batch 처리 시작: {total_videos}개 비디오...")
+            # ===== 총 프레임 수 사전 계산 (frame-based progress) =====
+            progress(0, desc="📊 프레임 수 계산 중...")
+            total_expected_frames = 0
+            video_frame_counts = []  # 각 비디오별 예상 프레임 수
+
+            for video_path in videos_to_process:
+                matching_info = None
+                for info in self.batch_video_info:
+                    if info['path'] == video_path:
+                        matching_info = info
+                        break
+
+                if matching_info:
+                    num_frames = matching_info['frames']
+                    calculated_stride = max(1, num_frames // target_frames)
+                    actual_frames = (num_frames + calculated_stride - 1) // calculated_stride
+                    video_frame_counts.append(actual_frames)
+                    total_expected_frames += actual_frames
+                else:
+                    video_frame_counts.append(0)
+
+            progress(0.02, desc=f"🚀 Batch 처리: {total_videos}개 비디오, 총 {total_expected_frames}프레임")
 
             for video_idx, video_path in enumerate(videos_to_process):
                 video_name = Path(video_path).name
-                progress(video_idx / total_videos, desc=f"처리 중: {video_name} ({video_idx+1}/{total_videos})")
+                # Frame-based progress
+                frame_progress = total_processed_frames / max(1, total_expected_frames)
+                progress(0.02 + frame_progress * 0.96, desc=f"📹 {video_name} ({total_processed_frames}/{total_expected_frames} 프레임)")
 
                 print(f"\n{'='*80}")
                 print(f"📹 비디오 {video_idx+1}/{total_videos}: {video_name}")
@@ -748,7 +960,8 @@ class SAMInteractiveWebApp:
                 try:
                     for idx, frame in enumerate(frames):
                         frame_path = Path(video_temp_dir) / f"{idx:05d}.jpg"
-                        cv2.imwrite(str(frame_path), frame)
+                        # frames는 RGB이므로 BGR로 변환하여 저장
+                        cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
                     # SAM 2 inference
                     if self.sam2_video_predictor is not None:
@@ -790,18 +1003,23 @@ class SAMInteractiveWebApp:
                         video_result_dir = batch_temp_dir / f"video_{video_idx:03d}"
                         video_result_dir.mkdir(exist_ok=True)
 
-                        for frame_idx, mask in video_segments.items():
+                        video_frame_count = len(video_segments)
+                        for save_idx, (frame_idx, mask) in enumerate(video_segments.items()):
                             frame_dir = video_result_dir / f"frame_{frame_idx:04d}"
                             frame_dir.mkdir(exist_ok=True)
 
-                            # Save frame and mask
-                            cv2.imwrite(str(frame_dir / "original.png"), frames[frame_idx])
+                            # Save frame and mask (RGB→BGR 변환)
+                            cv2.imwrite(str(frame_dir / "original.png"), cv2.cvtColor(frames[frame_idx], cv2.COLOR_RGB2BGR))
 
                             mask_uint8 = mask.squeeze().astype(np.uint8) * 255
                             cv2.imwrite(str(frame_dir / "mask.png"), mask_uint8)
 
-                        print(f"✓ {len(video_segments)} 프레임 저장 완료")
-                        total_processed_frames += len(video_segments)
+                            # Update progress per frame (실시간 업데이트)
+                            total_processed_frames += 1
+                            frame_progress = total_processed_frames / max(1, total_expected_frames)
+                            progress(0.02 + frame_progress * 0.96, desc=f"💾 {video_name} ({save_idx+1}/{video_frame_count}) - 총 {total_processed_frames}/{total_expected_frames}")
+
+                        print(f"✓ {video_frame_count} 프레임 저장 완료")
 
                         video_results.append({
                             'video_idx': video_idx,
@@ -845,7 +1063,7 @@ class SAMInteractiveWebApp:
                 'reference_annotations': reference_annotations
             }
 
-            progress(1.0, desc="Batch 처리 완료!")
+            progress(1.0, desc=f"✅ Batch 완료! {total_processed_frames}프레임 ({total_videos}개 비디오)")
 
             status = f"""
 ### 🎉 Batch Propagation 완료 ✅
@@ -931,6 +1149,9 @@ class SAMInteractiveWebApp:
                         if frame_dir.is_dir() and frame_dir.name.startswith('frame_'):
                             dst = video_save_dir / frame_dir.name
                             shutil.copytree(frame_dir, dst, dirs_exist_ok=True)
+
+                # result_dir 업데이트 (Export Fauna에서 사용)
+                video_result['result_dir'] = str(video_save_dir)
 
                 # 비디오 메타데이터
                 video_meta = {
@@ -1361,8 +1582,8 @@ class SAMInteractiveWebApp:
 5. **Generate 3D Mesh** 클릭하여 3D 생성
             """
 
-            # 첫 프레임 반환 + 슬라이더 업데이트
-            frame_rgb = cv2.cvtColor(self.frames[0], cv2.COLOR_BGR2RGB)
+            # 첫 프레임 반환 + 슬라이더 업데이트 (self.frames는 이미 RGB)
+            frame_rgb = self.frames[0].copy()
 
             # 슬라이더 범위 업데이트
             slider_update = gr.Slider(
@@ -1418,9 +1639,8 @@ class SAMInteractiveWebApp:
         # Point 추가
         self.annotations[point_type].append((x, y))
 
-        # 현재 프레임에 point 표시
-        frame = self.frames[self.current_frame_idx].copy()
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # 현재 프레임에 point 표시 (self.frames는 이미 RGB)
+        frame_rgb = self.frames[self.current_frame_idx].copy()
 
         # Foreground points (녹색)
         for px, py in self.annotations['foreground']:
@@ -1444,57 +1664,72 @@ class SAMInteractiveWebApp:
 
     def segment_current_frame(self) -> Tuple[np.ndarray, str]:
         """
-        현재 프레임을 SAM으로 세그멘테이션
-        (간단한 contour 기반, 실제 SAM 모델 통합은 별도 필요)
+        현재 프레임을 SAM2로 세그멘테이션
+        SAM2 모델이 필수이며, 없으면 다운로드 안내 표시
         """
         if len(self.frames) == 0:
-            return None, "먼저 비디오를 로드하세요"
+            return None, "❌ 먼저 비디오를 로드하세요"
 
         if len(self.annotations['foreground']) == 0:
-            return None, "최소 1개의 foreground point가 필요합니다"
+            return None, "❌ 최소 1개의 foreground point가 필요합니다"
+
+        # SAM2 모델 확인 - 없으면 에러
+        if self.sam2_predictor is None:
+            checkpoint = self.SAM2_CHECKPOINT_PATH
+            if not checkpoint.exists():
+                return None, f"""❌ **SAM2 모델이 필요합니다**
+
+SAM2 체크포인트가 없습니다.
+상단의 **🔄 SAM2 모델 다운로드** 버튼을 클릭하세요.
+
+또는 터미널에서:
+```
+./download_checkpoints.sh
+```
+
+예상 경로: `{checkpoint}`
+"""
+            else:
+                return None, """❌ **SAM2 모델이 로드되지 않았습니다**
+
+상단의 **🔄 SAM2 모델 다운로드** 버튼을 클릭하여 모델을 로드하세요.
+"""
 
         try:
-            frame = self.frames[self.current_frame_idx]
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # self.frames는 이미 RGB
+            frame_rgb = self.frames[self.current_frame_idx]
 
-            # SAM2 사용 (available하면)
-            if self.sam2_predictor is not None:
-                # SAM2 inference
-                self.sam2_predictor.set_image(frame_rgb)
+            # SAM2 inference
+            self.sam2_predictor.set_image(frame_rgb)
 
-                # Points와 labels 준비
-                point_coords = []
-                point_labels = []
+            # Points와 labels 준비
+            point_coords = []
+            point_labels = []
 
-                for px, py in self.annotations['foreground']:
-                    point_coords.append([px, py])
-                    point_labels.append(1)  # foreground
+            for px, py in self.annotations['foreground']:
+                point_coords.append([px, py])
+                point_labels.append(1)  # foreground
 
-                for px, py in self.annotations['background']:
-                    point_coords.append([px, py])
-                    point_labels.append(0)  # background
+            for px, py in self.annotations['background']:
+                point_coords.append([px, py])
+                point_labels.append(0)  # background
 
-                point_coords = np.array(point_coords, dtype=np.float32)
-                point_labels = np.array(point_labels, dtype=np.int32)
+            point_coords = np.array(point_coords, dtype=np.float32)
+            point_labels = np.array(point_labels, dtype=np.int32)
 
-                # SAM2 predict
-                masks, scores, _ = self.sam2_predictor.predict(
-                    point_coords=point_coords,
-                    point_labels=point_labels,
-                    multimask_output=True
-                )
+            # SAM2 predict
+            masks, scores, _ = self.sam2_predictor.predict(
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=True
+            )
 
-                # Best mask 선택
-                best_idx = np.argmax(scores)
-                mask = masks[best_idx]
-                confidence = scores[best_idx]
+            # Best mask 선택
+            best_idx = np.argmax(scores)
+            mask = masks[best_idx]
+            confidence = scores[best_idx]
 
-                status_method = f"SAM2 (confidence: {confidence:.3f})"
-            else:
-                # Fallback: contour 기반
-                mask = self.processor.segment_object_interactive(frame, method='contour')
-                confidence = 0.0
-                status_method = "Contour (fallback)"
+            status_method = f"SAM2 (confidence: {confidence:.3f})"
 
             # 마스크 저장
             self.masks[self.current_frame_idx] = mask
@@ -1578,10 +1813,10 @@ class SAMInteractiveWebApp:
 
                     progress(0.05, desc=f"프레임 저장 중 (stride={effective_stride}, 총 {len(frame_indices)} 프레임)...")
 
-                    # stride 간격으로만 프레임 저장
+                    # stride 간격으로만 프레임 저장 (self.frames는 RGB이므로 BGR로 변환)
                     for idx, i in enumerate(frame_indices):
                         frame_path = os.path.join(temp_dir, f"{idx:05d}.jpg")
-                        cv2.imwrite(frame_path, self.frames[i])
+                        cv2.imwrite(frame_path, cv2.cvtColor(self.frames[i], cv2.COLOR_RGB2BGR))
 
                     # 원본 인덱스 매핑 저장 (나중에 결과를 원본 인덱스로 복원)
                     self.stride_frame_mapping = {idx: i for idx, i in enumerate(frame_indices)}
@@ -1699,12 +1934,12 @@ class SAMInteractiveWebApp:
 
             progress(1.0, desc="시각화 준비 중...")
 
-            # 현재 프레임 시각화
+            # 현재 프레임 시각화 (self.frames는 이미 RGB)
             self.current_frame_idx = min(self.current_frame_idx, len(self.frames) - 1)
             current_frame = self.frames[self.current_frame_idx]
             current_mask = self.masks[self.current_frame_idx]
 
-            frame_rgb = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
+            frame_rgb = current_frame.copy()  # 이미 RGB이므로 변환 불필요
             overlay = frame_rgb.copy()
             if current_mask is not None:
                 overlay[current_mask > 0] = [0, 255, 0]
@@ -1993,12 +2228,13 @@ meshlab {output_path}
             import traceback
             return None, f"오류:\n{str(e)}\n{traceback.format_exc()}"
 
-    def save_annotation_session(self, session_name: str = "") -> str:
+    def save_annotation_session(self, session_name: str = "", save_as_new: bool = False) -> str:
         """
         Annotation 세션 전체 저장 (annotation points + masks + metadata)
 
         Args:
             session_name: 세션 이름 (비어있으면 timestamp 사용)
+            save_as_new: True면 항상 새 세션 생성, False면 기존 세션 덮어쓰기 시도
         """
         print("\n" + "="*80)
         print("🔹 save_annotation_session() 시작")
@@ -2014,22 +2250,26 @@ meshlab {output_path}
         print(f"✓ Background points: {len(self.annotations['background'])}")
 
         try:
-            # 세션 ID 생성
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            if session_name and session_name.strip():
-                # 사용자 지정 이름 사용 (timestamp 추가)
-                session_id = f"{session_name.strip()}_{timestamp}"
+            # 덮어쓰기 vs 새로 저장 결정
+            if not save_as_new and self.current_session_path and Path(self.current_session_path).exists():
+                # 기존 세션 덮어쓰기
+                output_dir = Path(self.current_session_path)
+                session_id = output_dir.name
+                print(f"✓ 기존 세션 덮어쓰기: {session_id}")
             else:
-                # timestamp만 사용
-                session_id = timestamp
+                # 새 세션 생성
+                if session_name and session_name.strip():
+                    session_id = f"{session_name.strip()}_{timestamp}"
+                else:
+                    session_id = timestamp
+                output_dir = Path(f"outputs/sessions/{session_id}")
+                print(f"✓ 새 세션 ID 생성: {session_id}")
 
-            print(f"✓ 세션 ID 생성: {session_id}")
-
-            output_dir = Path(f"outputs/sessions/{session_id}")
             output_dir.mkdir(parents=True, exist_ok=True)
-            print(f"✓ 출력 디렉토리 생성: {output_dir}")
+            print(f"✓ 출력 디렉토리: {output_dir}")
 
             # 1. Annotation 메타데이터 저장 (JSON)
             print("\n🔹 Step 1: 메타데이터 구성 중...")
@@ -2147,6 +2387,9 @@ meshlab {output_path}
                 print(f"❌ 메타데이터 저장 오류: {str(e)}")
                 raise
 
+            # 현재 세션 경로 업데이트 (다음 저장 시 덮어쓰기용)
+            self.current_session_path = str(output_dir)
+
             print("\n" + "="*80)
             print("✅ save_annotation_session() 완료!")
             print("="*80 + "\n")
@@ -2214,10 +2457,11 @@ meshlab {output_path}
             for i in range(num_frames):
                 frame_dir = session_dir / f"frame_{i:04d}"
 
-                # 원본 프레임 로드
+                # 원본 프레임 로드 (BGR→RGB 변환하여 self.frames는 항상 RGB로 유지)
                 frame_path = frame_dir / "original.png"
                 frame = cv2.imread(str(frame_path))
-                self.frames.append(frame)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.frames.append(frame_rgb)
 
                 # 마스크 로드 (있으면)
                 mask_path = frame_dir / "mask.png"
@@ -2237,11 +2481,11 @@ meshlab {output_path}
             self.video_path = metadata["video_path"]
             self.current_frame_idx = metadata["current_frame_idx"]
 
-            # 현재 프레임 시각화
+            # 현재 프레임 시각화 (self.frames는 이미 RGB)
             current_frame = self.frames[self.current_frame_idx]
             current_mask = self.masks[self.current_frame_idx]
 
-            frame_rgb = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
+            frame_rgb = current_frame.copy()  # 이미 RGB이므로 변환 불필요
             if current_mask is not None:
                 overlay = frame_rgb.copy()
                 overlay[current_mask > 0] = [0, 255, 0]
@@ -2276,6 +2520,9 @@ meshlab {output_path}
 이제 프레임 네비게이션, 추가 annotation, propagation 등을 계속할 수 있습니다.
 """
 
+            # 현재 세션 경로 업데이트 (다음 저장 시 덮어쓰기용)
+            self.current_session_path = str(session_dir)
+
             return result, status
 
         except Exception as e:
@@ -2296,6 +2543,96 @@ meshlab {output_path}
         except Exception as e:
             print(f"세션 목록 가져오기 실패: {e}")
             return []
+
+    def delete_session(self, session_id: str) -> Tuple[str, List[str]]:
+        """
+        세션 삭제
+
+        Args:
+            session_id: 삭제할 세션 ID
+
+        Returns:
+            (상태 메시지, 업데이트된 세션 목록)
+        """
+        import shutil
+
+        if not session_id:
+            return "⚠️ 삭제할 세션을 선택하세요", self.get_session_ids()
+
+        try:
+            session_dir = Path("outputs/sessions") / session_id
+
+            if not session_dir.exists():
+                return f"❌ 세션을 찾을 수 없습니다: {session_id}", self.get_session_ids()
+
+            # 현재 로드된 세션인지 확인
+            if self.current_session_path and Path(self.current_session_path) == session_dir:
+                self.current_session_path = None
+
+            # 세션 폴더 삭제
+            shutil.rmtree(session_dir)
+
+            return f"✅ 세션 삭제 완료: `{session_id}`", self.get_session_ids()
+
+        except Exception as e:
+            import traceback
+            return f"❌ 삭제 실패: {str(e)}\n{traceback.format_exc()}", self.get_session_ids()
+
+    def rename_session(self, session_id: str, new_name: str) -> Tuple[str, List[str], str]:
+        """
+        세션 이름 변경
+
+        Args:
+            session_id: 변경할 세션 ID
+            new_name: 새 이름
+
+        Returns:
+            (상태 메시지, 업데이트된 세션 목록, 새 세션 ID)
+        """
+        if not session_id:
+            return "⚠️ 변경할 세션을 선택하세요", self.get_session_ids(), None
+
+        if not new_name or not new_name.strip():
+            return "⚠️ 새 이름을 입력하세요", self.get_session_ids(), session_id
+
+        new_name = new_name.strip()
+
+        # 특수문자 제거 (파일시스템 안전)
+        import re
+        safe_name = re.sub(r'[<>:"/\\|?*]', '_', new_name)
+
+        try:
+            sessions_dir = Path("outputs/sessions")
+            old_path = sessions_dir / session_id
+            new_path = sessions_dir / safe_name
+
+            if not old_path.exists():
+                return f"❌ 세션을 찾을 수 없습니다: {session_id}", self.get_session_ids(), None
+
+            if new_path.exists():
+                return f"❌ 이미 존재하는 이름입니다: {safe_name}", self.get_session_ids(), session_id
+
+            # 폴더 이름 변경
+            old_path.rename(new_path)
+
+            # 메타데이터 업데이트
+            metadata_path = new_path / "session_metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                metadata['session_id'] = safe_name
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+
+            # 현재 로드된 세션 경로 업데이트
+            if self.current_session_path and Path(self.current_session_path) == old_path:
+                self.current_session_path = str(new_path)
+
+            return f"✅ 이름 변경 완료: `{session_id}` → `{safe_name}`", self.get_session_ids(), safe_name
+
+        except Exception as e:
+            import traceback
+            return f"❌ 이름 변경 실패: {str(e)}\n{traceback.format_exc()}", self.get_session_ids(), session_id
 
     def list_saved_sessions(self) -> str:
         """저장된 세션 목록 조회"""
@@ -2833,6 +3170,71 @@ dataset:
             - 🎨 **Interactive Mode**: 수동 annotation & propagation (정확함)
             """)
 
+            # ===== SAM2 모델 상태 (컴팩트 한 줄) =====
+            with gr.Row(equal_height=True):
+                sam2_status = gr.Markdown(
+                    self._get_sam2_status_markdown(),
+                    elem_id="sam2-status"
+                )
+                sam2_download_btn = gr.Button(
+                    "🔄 다운로드/로드" if self.sam2_predictor is None else "✅ 로드됨",
+                    variant="primary" if self.sam2_predictor is None else "secondary",
+                    size="sm",
+                    scale=0,
+                    min_width=120
+                )
+                sam2_progress_text = gr.Textbox(
+                    value="",
+                    show_label=False,
+                    scale=1,
+                    max_lines=1,
+                    placeholder="진행 상태..."
+                )
+
+            def download_and_load_sam2(progress=gr.Progress()):
+                """SAM2 체크포인트 다운로드 및 모델 로드"""
+                progress(0, desc="SAM2 확인 중...")
+
+                # 이미 로드되어 있으면
+                if self.sam2_predictor is not None and self.sam2_video_predictor is not None:
+                    return self._get_sam2_status_markdown(), "✅ SAM2 모델이 이미 로드되어 있습니다."
+
+                if not SAM2_AVAILABLE:
+                    return self._get_sam2_status_markdown(), "❌ SAM2 패키지가 설치되지 않았습니다. pip install sam2"
+
+                checkpoint = self.SAM2_CHECKPOINT_PATH
+                if self.config:
+                    config_checkpoint = Path(self.config.sam2_checkpoint)
+                    if config_checkpoint.exists():
+                        checkpoint = config_checkpoint
+
+                # 다운로드 필요 여부
+                if not checkpoint.exists():
+                    progress(0.1, desc="📥 SAM2 체크포인트 다운로드 중... (약 900MB)")
+
+                    def update_progress(p):
+                        progress(0.1 + p * 0.7, desc=f"📥 다운로드 중... {p*100:.0f}%")
+
+                    success, msg = self.download_sam2_checkpoint(update_progress)
+                    if not success:
+                        return self._get_sam2_status_markdown(), f"❌ 다운로드 실패: {msg}"
+
+                # 모델 로드
+                progress(0.85, desc="🔄 SAM2 모델 로딩 중...")
+                success, msg = self.load_sam2_models()
+
+                progress(1.0, desc="완료!")
+
+                if success:
+                    return self._get_sam2_status_markdown(), f"✅ {msg}"
+                else:
+                    return self._get_sam2_status_markdown(), f"❌ {msg}"
+
+            sam2_download_btn.click(
+                fn=download_and_load_sam2,
+                outputs=[sam2_status, sam2_progress_text]
+            )
+
             # 비디오 자동 스캔 (Interactive Mode용)
             initial_videos = self.scan_videos(self.default_data_dir)
             initial_video = initial_videos[0] if initial_videos else None
@@ -2953,17 +3355,30 @@ dataset:
                                 interactive=True,
                                 scale=2
                             )
-                            load_session_btn = gr.Button("📂 Load Session")
+
+                            with gr.Row():
+                                load_session_btn = gr.Button("📂 로드", variant="primary", scale=1)
+                                delete_session_btn = gr.Button("🗑️ 삭제", variant="stop", scale=1)
+
+                            with gr.Accordion("✏️ 세션 이름 변경", open=False):
+                                rename_session_input = gr.Textbox(
+                                    label="새 이름",
+                                    placeholder="새 세션 이름 입력",
+                                    info="선택한 세션의 이름을 변경합니다"
+                                )
+                                rename_session_btn = gr.Button("✏️ 이름 변경", size="sm")
 
                             gr.Markdown("### 💾 세션 저장")
 
                             session_name_input = gr.Textbox(
-                                label="세션 이름 (선택사항)",
+                                label="세션 이름 (새로 저장 시)",
                                 placeholder="예: mouse_experiment_1",
-                                info="비어있으면 timestamp만 사용"
+                                info="새로 저장 시에만 사용 (비어있으면 timestamp)"
                             )
 
-                            save_session_btn = gr.Button("💾 Save Session", variant="secondary")
+                            with gr.Row():
+                                save_session_btn = gr.Button("💾 저장", variant="secondary", scale=1)
+                                save_session_new_btn = gr.Button("📝 새로 저장", variant="secondary", scale=1)
 
                             gr.Markdown("### 🎲 3D & 출력")
 
@@ -3085,8 +3500,15 @@ dataset:
                         outputs=[image_display, status_text]
                     )
 
+                    # 저장 (기존 세션 덮어쓰기)
                     save_session_btn.click(
-                        fn=self.save_annotation_session,
+                        fn=lambda: self.save_annotation_session(save_as_new=False),
+                        outputs=[status_text]
+                    )
+
+                    # 새로 저장 (새 세션 생성)
+                    save_session_new_btn.click(
+                        fn=lambda name: self.save_annotation_session(session_name=name, save_as_new=True),
                         inputs=[session_name_input],
                         outputs=[status_text]
                     )
@@ -3118,11 +3540,6 @@ dataset:
                     )
 
                     # 세션 관리 이벤트
-                    save_session_btn.click(
-                        fn=self.save_annotation_session,
-                        outputs=[status_text]
-                    )
-
                     session_refresh_btn.click(
                         fn=lambda: gr.Dropdown(choices=self.get_session_ids()),
                         outputs=[session_id_dropdown]
@@ -3134,10 +3551,32 @@ dataset:
                         outputs=[image_display, status_text]
                     )
 
+                    # 세션 삭제
+                    def delete_session_handler(session_id):
+                        msg, sessions = self.delete_session(session_id)
+                        return msg, gr.Dropdown(choices=sessions, value=sessions[0] if sessions else None)
+
+                    delete_session_btn.click(
+                        fn=delete_session_handler,
+                        inputs=[session_id_dropdown],
+                        outputs=[status_text, session_id_dropdown]
+                    )
+
+                    # 세션 이름 변경
+                    def rename_session_handler(session_id, new_name):
+                        msg, sessions, new_id = self.rename_session(session_id, new_name)
+                        return msg, gr.Dropdown(choices=sessions, value=new_id if new_id else (sessions[0] if sessions else None)), ""
+
+                    rename_session_btn.click(
+                        fn=rename_session_handler,
+                        inputs=[session_id_dropdown, rename_session_input],
+                        outputs=[status_text, session_id_dropdown, rename_session_input]
+                    )
+
                     def clear_points():
                         self.annotations = {'foreground': [], 'background': []}
                         if len(self.frames) > 0:
-                            frame_rgb = cv2.cvtColor(self.frames[self.current_frame_idx], cv2.COLOR_BGR2RGB)
+                            frame_rgb = self.frames[self.current_frame_idx].copy()  # 이미 RGB
                             return frame_rgb, "Points 초기화됨"
                         return None, "Points 초기화됨"
 
@@ -3258,10 +3697,11 @@ dataset:
 
                             # 세션 로드
                             with gr.Accordion("📂 세션 불러오기", open=False):
-                                batch_load_session_path = gr.Textbox(
-                                    label="세션 경로",
-                                    placeholder="예: outputs/sessions/mouse_batch_20251125_123456",
-                                    info="세션 폴더 경로 또는 session_metadata.json 경로"
+                                batch_session_scan_btn = gr.Button("🔍 세션 스캔", size="sm")
+                                batch_load_session_dropdown = gr.Dropdown(
+                                    label="세션 선택",
+                                    choices=[],
+                                    interactive=True
                                 )
                                 batch_load_session_btn = gr.Button("📂 세션 로드", variant="secondary")
 
@@ -3351,7 +3791,7 @@ dataset:
                     def batch_clear_points():
                         self.annotations = {'foreground': [], 'background': []}
                         if len(self.frames) > 0:
-                            frame_rgb = cv2.cvtColor(self.frames[self.current_frame_idx], cv2.COLOR_BGR2RGB)
+                            frame_rgb = self.frames[self.current_frame_idx].copy()  # 이미 RGB
                             return frame_rgb, "Points 초기화됨"
                         return None, "Points 초기화됨"
 
@@ -3366,10 +3806,31 @@ dataset:
                         outputs=[batch_status_text, gr.State()]
                     )
 
+                    # 세션 스캔
+                    def scan_batch_sessions():
+                        """Batch 세션 디렉토리 스캔"""
+                        sessions_dir = Path(self.default_output_dir) / "sessions"
+                        if not sessions_dir.exists():
+                            return gr.Dropdown(choices=[])
+
+                        sessions = []
+                        for session_dir in sessions_dir.iterdir():
+                            if session_dir.is_dir():
+                                # Check for batch session metadata
+                                meta_file = session_dir / "session_metadata.json"
+                                if meta_file.exists():
+                                    sessions.append(str(session_dir))
+                        return gr.Dropdown(choices=sorted(sessions, reverse=True))
+
+                    batch_session_scan_btn.click(
+                        fn=scan_batch_sessions,
+                        outputs=[batch_load_session_dropdown]
+                    )
+
                     # 세션 로드
                     batch_load_session_btn.click(
                         fn=self.load_batch_session,
-                        inputs=[batch_load_session_path],
+                        inputs=[batch_load_session_dropdown],
                         outputs=[batch_status_text, batch_output_path]
                     )
 
@@ -3703,6 +4164,33 @@ dataset:
                                 aug_color_jitter_enable = gr.Checkbox(label="Enable Color Jitter", value=False)
                                 aug_blur_enable = gr.Checkbox(label="Enable Gaussian Blur", value=False)
 
+                            with gr.Accordion("🖼️ Background Replacement", open=True):
+                                aug_replace_bg = gr.Checkbox(
+                                    label="Enable Background Replacement",
+                                    value=True,
+                                    info="Replace background with images or solid color"
+                                )
+                                aug_bg_image_ratio = gr.Slider(
+                                    label="Background Image Ratio",
+                                    minimum=0.0, maximum=1.0, value=0.5, step=0.1,
+                                    info="Probability of using background image (vs solid color)"
+                                )
+                                aug_bg_folder = gr.Textbox(
+                                    label="Background Images Folder",
+                                    value=self.config.augmentation_background_folder if self.config else "",
+                                    placeholder="/path/to/background/images"
+                                )
+                                aug_load_bg_btn = gr.Button("📂 Load Background Images", size="sm")
+                                aug_bg_status = gr.Markdown("No background images loaded")
+
+                            # Safety options
+                            gr.Markdown("#### 🛡️ Safety Options")
+                            aug_prevent_clipping = gr.Checkbox(
+                                label="Prevent Object Clipping",
+                                value=True,
+                                info="Auto-offset to prevent object from being clipped at image boundaries"
+                            )
+
                             # Preview settings
                             gr.Markdown("#### 👀 Preview Settings")
                             with gr.Row():
@@ -3834,6 +4322,24 @@ dataset:
                         outputs=[aug_session_list, aug_session_info]
                     )
 
+                    # Load background images
+                    def load_bg_images(folder_path):
+                        """Load background images from folder"""
+                        if not folder_path or not Path(folder_path).exists():
+                            return f"❌ Folder not found: {folder_path}"
+
+                        count = self.augmentor.load_background_images(folder_path)
+                        if count > 0:
+                            return f"✅ Loaded {count} background images"
+                        else:
+                            return "⚠️ No valid images found (jpg, jpeg, png)"
+
+                    aug_load_bg_btn.click(
+                        fn=load_bg_images,
+                        inputs=[aug_bg_folder],
+                        outputs=[aug_bg_status]
+                    )
+
                     # Load session
                     def load_aug_session(session_path):
                         """Load annotation session for augmentation"""
@@ -3857,14 +4363,26 @@ dataset:
                             else:
                                 return None, f"❌ No session metadata found in {session_path}"
 
-                            # Detect format (flat vs Fauna)
+                            # Detect format (flat vs Fauna vs Batch)
                             flat_rgb_dir = session_path / "rgb"
                             flat_mask_dir = session_path / "masks"
                             is_flat_format = flat_rgb_dir.exists() and flat_mask_dir.exists()
+                            is_batch_format = metadata.get('session_type') == 'batch'
 
                             # Count frames
                             frame_count = 0
-                            if is_flat_format:
+                            if is_batch_format:
+                                # Batch format: video_XXX/frame_XXXX/original.png
+                                video_dirs = [d for d in session_path.iterdir()
+                                              if d.is_dir() and d.name.startswith('video_')]
+                                for video_dir in video_dirs:
+                                    frame_dirs = [f for f in video_dir.iterdir()
+                                                  if f.is_dir() and f.name.startswith('frame_')]
+                                    # Count frames with original.png (batch format)
+                                    frame_count += len([f for f in frame_dirs
+                                                        if (f / "original.png").exists()])
+                                format_type = "Batch (video_XXX/frame_XXXX/)"
+                            elif is_flat_format:
                                 frame_count = len(list(flat_rgb_dir.glob("*.png")))
                                 format_type = "Flat (rgb/, masks/)"
                             else:
@@ -3911,14 +4429,15 @@ dataset:
                         flip_enable,
                         noise_enable, noise_std,
                         brightness_enable, brightness_min, brightness_max,
-                        contrast_enable, color_jitter_enable, blur_enable
+                        contrast_enable, color_jitter_enable, blur_enable,
+                        replace_bg, bg_image_ratio, prevent_clipping
                     ):
                         """Generate augmentation preview grid"""
                         try:
                             if not hasattr(self, 'aug_session_path'):
                                 return None, "❌ Please load a session first"
 
-                            # Load first frame and mask (support both flat and Fauna formats)
+                            # Load first frame and mask (support flat, Fauna, and Batch formats)
                             rgb_files = []
                             mask_files = []
 
@@ -3926,10 +4445,29 @@ dataset:
                             flat_rgb_dir = self.aug_session_path / "rgb"
                             flat_mask_dir = self.aug_session_path / "masks"
 
+                            # Check for batch format
+                            is_batch = hasattr(self, 'aug_metadata') and self.aug_metadata.get('session_type') == 'batch'
+
                             if flat_rgb_dir.exists() and flat_mask_dir.exists():
                                 # Flat format
                                 rgb_files = sorted(flat_rgb_dir.glob("*.png"))
                                 mask_files = sorted(flat_mask_dir.glob("*.png"))
+                            elif is_batch:
+                                # Batch format: video_XXX/frame_XXXX/original.png + mask.png
+                                video_dirs = sorted([d for d in self.aug_session_path.iterdir()
+                                                    if d.is_dir() and d.name.startswith('video_')])
+                                for video_dir in video_dirs:
+                                    frame_dirs = sorted([f for f in video_dir.iterdir()
+                                                        if f.is_dir() and f.name.startswith('frame_')])
+                                    for frame_dir in frame_dirs:
+                                        rgb_file = frame_dir / "original.png"
+                                        mask_file = frame_dir / "mask.png"
+                                        if rgb_file.exists() and mask_file.exists():
+                                            rgb_files.append(rgb_file)
+                                            mask_files.append(mask_file)
+                                            break  # Just need first frame for preview
+                                    if rgb_files:
+                                        break
                             else:
                                 # Fauna format
                                 frame_dirs = sorted([d for d in self.aug_session_path.iterdir() if d.is_dir()])
@@ -3989,6 +4527,16 @@ dataset:
                                 if blur_enable:
                                     config['blur'] = random.choice([3, 5, 7])
 
+                                # Background replacement
+                                if replace_bg:
+                                    config['replace_background'] = True
+                                    config['use_bg_image'] = True
+                                    config['bg_image_ratio'] = bg_image_ratio
+
+                                # Prevent clipping
+                                if prevent_clipping:
+                                    config['prevent_clipping'] = True
+
                                 configs.append(config)
 
                             # Generate preview grid
@@ -4013,7 +4561,8 @@ dataset:
                             aug_flip_enable,
                             aug_noise_enable, aug_noise_std,
                             aug_brightness_enable, aug_brightness_min, aug_brightness_max,
-                            aug_contrast_enable, aug_color_jitter_enable, aug_blur_enable
+                            aug_contrast_enable, aug_color_jitter_enable, aug_blur_enable,
+                            aug_replace_bg, aug_bg_image_ratio, aug_prevent_clipping
                         ],
                         outputs=[aug_preview_display, aug_status]
                     )
@@ -4028,42 +4577,71 @@ dataset:
                         flip_enable,
                         noise_enable, noise_std,
                         brightness_enable, brightness_min, brightness_max,
-                        contrast_enable, color_jitter_enable, blur_enable
+                        contrast_enable, color_jitter_enable, blur_enable,
+                        replace_bg, bg_image_ratio,
+                        prevent_clipping_enable=True,
+                        progress=gr.Progress()
                     ):
                         """Apply augmentation to all frames in session"""
+                        from datetime import datetime
+
                         try:
                             if not hasattr(self, 'aug_session_path'):
                                 return "❌ Please load a session first", ""
 
+                            progress(0, desc="🔍 Loading frames...")
+
                             output_path = Path(output_dir)
                             output_path.mkdir(parents=True, exist_ok=True)
 
-                            # Load all frames (support both flat and Fauna formats)
+                            # Load all frames (support flat, Fauna, and Batch formats)
                             rgb_files = []
                             mask_files = []
+                            frame_indices = []  # Track original frame index for naming
 
                             # Check for flat format (rgb/ and masks/ folders)
                             flat_rgb_dir = self.aug_session_path / "rgb"
                             flat_mask_dir = self.aug_session_path / "masks"
 
+                            # Check for batch format
+                            is_batch = hasattr(self, 'aug_metadata') and self.aug_metadata.get('session_type') == 'batch'
+
                             if flat_rgb_dir.exists() and flat_mask_dir.exists():
                                 # Flat format
                                 rgb_files = sorted(flat_rgb_dir.glob("*.png"))
                                 mask_files = sorted(flat_mask_dir.glob("*.png"))
+                                frame_indices = list(range(len(rgb_files)))
+                            elif is_batch:
+                                # Batch format: video_XXX/frame_XXXX/original.png + mask.png
+                                global_idx = 0
+                                video_dirs = sorted([d for d in self.aug_session_path.iterdir()
+                                                    if d.is_dir() and d.name.startswith('video_')])
+                                for video_dir in video_dirs:
+                                    frame_dirs = sorted([f for f in video_dir.iterdir()
+                                                        if f.is_dir() and f.name.startswith('frame_')])
+                                    for frame_dir in frame_dirs:
+                                        rgb_file = frame_dir / "original.png"
+                                        mask_file = frame_dir / "mask.png"
+                                        if rgb_file.exists() and mask_file.exists():
+                                            rgb_files.append(rgb_file)
+                                            mask_files.append(mask_file)
+                                            frame_indices.append(global_idx)
+                                            global_idx += 1
                             else:
                                 # Fauna format (frame directories)
                                 frame_dirs = sorted([d for d in self.aug_session_path.iterdir() if d.is_dir()])
-                                for frame_dir in frame_dirs:
+                                for idx, frame_dir in enumerate(frame_dirs):
                                     rgb_file = frame_dir / "rgb.png"
                                     mask_file = frame_dir / "mask.png"
                                     if rgb_file.exists() and mask_file.exists():
                                         rgb_files.append(rgb_file)
                                         mask_files.append(mask_file)
+                                        frame_indices.append(idx)
 
                             total_frames = len(rgb_files)
                             total_outputs = total_frames * int(multiplier)
 
-                            progress_msg = f"🚀 Processing {total_frames} frames × {int(multiplier)} = {total_outputs} outputs..."
+                            progress(0.05, desc=f"🚀 Processing {total_frames} frames × {int(multiplier)} = {total_outputs} outputs...")
 
                             import random
                             processed = 0
@@ -4075,6 +4653,9 @@ dataset:
 
                                 mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
                                 mask = mask > 127
+
+                                # Get frame index for naming (use tracked index if available)
+                                frame_idx = frame_indices[idx] if idx < len(frame_indices) else idx
 
                                 # Generate augmentations
                                 for aug_idx in range(int(multiplier)):
@@ -4111,15 +4692,22 @@ dataset:
                                     if blur_enable:
                                         config['blur'] = random.choice([3, 5, 7])
 
+                                    # Background replacement
+                                    if replace_bg:
+                                        config['replace_background'] = True
+                                        config['use_bg_image'] = True
+                                        config['bg_image_ratio'] = bg_image_ratio
+
+                                    # Prevent clipping option
+                                    if prevent_clipping_enable:
+                                        config['prevent_clipping'] = True
+
                                     # Apply augmentation
                                     aug_rgb, aug_mask, applied = self.augmentor.augment(rgb, mask, config)
 
                                     # Save in Fauna-compatible format (frame directories)
-                                    # Get original frame name (without extension)
-                                    original_basename = rgb_file.stem
-
-                                    # Create frame directory: {original_name}_aug{idx:02d}
-                                    frame_dir_name = f"{original_basename}_aug{aug_idx:02d}"
+                                    # Use frame index for unique naming (avoids overwrite when all files are original.png)
+                                    frame_dir_name = f"frame_{frame_idx:04d}_aug{aug_idx:02d}"
                                     frame_dir = output_path / frame_dir_name
                                     frame_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4134,8 +4722,8 @@ dataset:
                                     processed += 1
 
                                 # Update progress
-                                if (idx + 1) % 10 == 0:
-                                    progress_msg = f"⏳ Processed {idx + 1}/{total_frames} frames ({processed}/{total_outputs} outputs)"
+                                progress_pct = 0.05 + 0.90 * (idx + 1) / total_frames
+                                progress(progress_pct, desc=f"⏳ Frame {idx + 1}/{total_frames} ({processed}/{total_outputs} outputs)")
 
                             # Save metadata
                             metadata = {
@@ -4159,10 +4747,13 @@ dataset:
                                     'fill_color': fill_color,
                                     'offset_x_max': offset_x_max,
                                     'offset_y_max': offset_y_max,
-                                    'crop_padding': int(crop_padding)
+                                    'crop_padding': int(crop_padding),
+                                    'prevent_clipping': prevent_clipping_enable
                                 },
                                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             }
+
+                            progress(1.0, desc="✅ Complete!")
 
                             # Save as both augmentation_metadata.json and session_metadata.json
                             with open(output_path / "augmentation_metadata.json", 'w') as f:
@@ -4198,7 +4789,9 @@ dataset:
                             aug_flip_enable,
                             aug_noise_enable, aug_noise_std,
                             aug_brightness_enable, aug_brightness_min, aug_brightness_max,
-                            aug_contrast_enable, aug_color_jitter_enable, aug_blur_enable
+                            aug_contrast_enable, aug_color_jitter_enable, aug_blur_enable,
+                            aug_replace_bg, aug_bg_image_ratio,
+                            aug_prevent_clipping
                         ],
                         outputs=[aug_status, aug_progress]
                     )
