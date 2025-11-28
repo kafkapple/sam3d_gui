@@ -4851,8 +4851,7 @@ dataset:
                                 batch_preview_video = gr.Video(
                                     label="프리뷰 영상",
                                     interactive=False,
-                                    autoplay=True,
-                                    show_download_button=True
+                                    autoplay=True
                                 )
 
                                 gr.Markdown("---")
