@@ -158,18 +158,20 @@ class DataAugmentor:
         self,
         rgb: np.ndarray,
         mask: np.ndarray,
-        fill_color: Tuple[int, int, int] = (255, 255, 255)
+        fill_color: Tuple[int, int, int] = (255, 255, 255),
+        margin: int = 5
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Object가 이미지 경계에서 잘리지 않도록 오프셋 적용
 
         마스크 영역이 이미지 가장자리에 닿아있으면,
-        반대 방향으로 이동하여 전체가 보이도록 함
+        반대 방향으로 충분히 이동하여 전체가 보이도록 함
 
         Args:
             rgb: RGB 이미지 (H, W, 3)
             mask: 마스크 (H, W) - boolean or uint8
             fill_color: 빈 공간 채울 색상 (R, G, B)
+            margin: 경계와의 최소 여백 (픽셀)
 
         Returns:
             (adjusted_rgb, adjusted_mask)
@@ -193,34 +195,46 @@ class DataAugmentor:
         y_min, y_max = y_indices[0], y_indices[-1]
         x_min, x_max = x_indices[0], x_indices[-1]
 
-        # 필요한 오프셋 계산
+        mask_width = x_max - x_min + 1
+        mask_height = y_max - y_min + 1
+
+        # 필요한 오프셋 계산 (마스크가 이미지 내에 완전히 들어오도록)
         offset_x = 0
         offset_y = 0
 
-        # 좌측 경계에 닿음 → 오른쪽으로 이동
-        if x_min == 0:
-            # 마스크 폭 확인
-            mask_width = x_max - x_min + 1
-            if mask_width < w:
-                offset_x = min(10, (w - mask_width) // 2)  # 최대 10px 또는 가능한 만큼
+        # X축: 마스크가 이미지보다 작으면 이동 가능
+        if mask_width < w - margin * 2:
+            # 좌측이 잘림 (x_min < margin) → 오른쪽으로 이동
+            if x_min < margin:
+                offset_x = margin - x_min
+            # 우측이 잘림 (x_max > w - margin - 1) → 왼쪽으로 이동
+            elif x_max > w - margin - 1:
+                offset_x = (w - margin - 1) - x_max
 
-        # 우측 경계에 닿음 → 왼쪽으로 이동
-        if x_max == w - 1:
-            mask_width = x_max - x_min + 1
-            if mask_width < w:
-                offset_x = -min(10, (w - mask_width) // 2)
+            # 이동 후에도 반대편이 잘리지 않도록 보정
+            new_x_min = x_min + offset_x
+            new_x_max = x_max + offset_x
+            if new_x_min < 0:
+                offset_x -= new_x_min  # 0으로 맞춤
+            elif new_x_max >= w:
+                offset_x -= (new_x_max - w + 1)
 
-        # 상단 경계에 닿음 → 아래로 이동
-        if y_min == 0:
-            mask_height = y_max - y_min + 1
-            if mask_height < h:
-                offset_y = min(10, (h - mask_height) // 2)
+        # Y축: 마스크가 이미지보다 작으면 이동 가능
+        if mask_height < h - margin * 2:
+            # 상단이 잘림 (y_min < margin) → 아래로 이동
+            if y_min < margin:
+                offset_y = margin - y_min
+            # 하단이 잘림 (y_max > h - margin - 1) → 위로 이동
+            elif y_max > h - margin - 1:
+                offset_y = (h - margin - 1) - y_max
 
-        # 하단 경계에 닿음 → 위로 이동
-        if y_max == h - 1:
-            mask_height = y_max - y_min + 1
-            if mask_height < h:
-                offset_y = -min(10, (h - mask_height) // 2)
+            # 이동 후에도 반대편이 잘리지 않도록 보정
+            new_y_min = y_min + offset_y
+            new_y_max = y_max + offset_y
+            if new_y_min < 0:
+                offset_y -= new_y_min
+            elif new_y_max >= h:
+                offset_y -= (new_y_max - h + 1)
 
         # 오프셋이 0이면 그대로 반환
         if offset_x == 0 and offset_y == 0:

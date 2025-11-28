@@ -115,12 +115,15 @@ class SAMInteractiveWebApp:
     """
     SAM 3D GUI - 통합 웹 인터페이스
 
-    모드 1: 자동 처리 (Quick Mode)
-    - 비디오 선택 → 자동 세그멘테이션 → 모션 감지 → 결과
-
-    모드 2: 대화형 Annotation (Interactive Mode)
+    모드 1: 대화형 Annotation (Interactive Mode)
     - Point annotation (foreground/background)
-    - 수동 세그멘테이션 → Propagation → 3D mesh
+    - 수동 세그멘테이션 → Propagation → 결과
+
+    모드 2: 일괄 처리 (Batch Mode)
+    - 다중 비디오 일괄 처리, 세션 관리
+
+    모드 3: Lite Annotator
+    - 효율적 단일 프레임 annotation
     """
 
     # SAM2 체크포인트 기본 경로
@@ -353,6 +356,11 @@ class SAMInteractiveWebApp:
 
             # Video predictor
             self.sam2_video_predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
+
+            # Lite Annotator에 공용 predictor 전달
+            if self.lite_annotator is not None:
+                self.lite_annotator.set_predictor(self.sam2_predictor, "shared-large")
+                print(f"  └─ Lite Annotator에 공용 predictor 전달됨")
 
             print(f"✅ SAM2 모델 로드 완료")
             return True, f"SAM2 모델 로드 완료 (device: {device})"
@@ -881,34 +889,11 @@ class SAMInteractiveWebApp:
             total_processed_frames = 0
             video_results = []
 
-            # ===== 총 프레임 수 사전 계산 (frame-based progress) =====
-            progress(0, desc="📊 프레임 수 계산 중...")
-            total_expected_frames = 0
-            video_frame_counts = []  # 각 비디오별 예상 프레임 수
-
-            for video_path in videos_to_process:
-                matching_info = None
-                for info in self.batch_video_info:
-                    if info['path'] == video_path:
-                        matching_info = info
-                        break
-
-                if matching_info:
-                    num_frames = matching_info['frames']
-                    calculated_stride = max(1, num_frames // target_frames)
-                    actual_frames = (num_frames + calculated_stride - 1) // calculated_stride
-                    video_frame_counts.append(actual_frames)
-                    total_expected_frames += actual_frames
-                else:
-                    video_frame_counts.append(0)
-
-            progress(0.02, desc=f"🚀 Batch 처리: {total_videos}개 비디오, 총 {total_expected_frames}프레임")
+            progress(0, desc=f"Batch 처리 시작: {total_videos}개 비디오...")
 
             for video_idx, video_path in enumerate(videos_to_process):
                 video_name = Path(video_path).name
-                # Frame-based progress
-                frame_progress = total_processed_frames / max(1, total_expected_frames)
-                progress(0.02 + frame_progress * 0.96, desc=f"📹 {video_name} ({total_processed_frames}/{total_expected_frames} 프레임)")
+                progress(video_idx / total_videos, desc=f"처리 중: {video_name} ({video_idx+1}/{total_videos})")
 
                 print(f"\n{'='*80}")
                 print(f"📹 비디오 {video_idx+1}/{total_videos}: {video_name}")
@@ -1003,8 +988,7 @@ class SAMInteractiveWebApp:
                         video_result_dir = batch_temp_dir / f"video_{video_idx:03d}"
                         video_result_dir.mkdir(exist_ok=True)
 
-                        video_frame_count = len(video_segments)
-                        for save_idx, (frame_idx, mask) in enumerate(video_segments.items()):
+                        for frame_idx, mask in video_segments.items():
                             frame_dir = video_result_dir / f"frame_{frame_idx:04d}"
                             frame_dir.mkdir(exist_ok=True)
 
@@ -1014,12 +998,8 @@ class SAMInteractiveWebApp:
                             mask_uint8 = mask.squeeze().astype(np.uint8) * 255
                             cv2.imwrite(str(frame_dir / "mask.png"), mask_uint8)
 
-                            # Update progress per frame (실시간 업데이트)
-                            total_processed_frames += 1
-                            frame_progress = total_processed_frames / max(1, total_expected_frames)
-                            progress(0.02 + frame_progress * 0.96, desc=f"💾 {video_name} ({save_idx+1}/{video_frame_count}) - 총 {total_processed_frames}/{total_expected_frames}")
-
-                        print(f"✓ {video_frame_count} 프레임 저장 완료")
+                        print(f"✓ {len(video_segments)} 프레임 저장 완료")
+                        total_processed_frames += len(video_segments)
 
                         video_results.append({
                             'video_idx': video_idx,
@@ -1063,7 +1043,7 @@ class SAMInteractiveWebApp:
                 'reference_annotations': reference_annotations
             }
 
-            progress(1.0, desc=f"✅ Batch 완료! {total_processed_frames}프레임 ({total_videos}개 비디오)")
+            progress(1.0, desc="Batch 처리 완료!")
 
             status = f"""
 ### 🎉 Batch Propagation 완료 ✅
@@ -1130,6 +1110,12 @@ class SAMInteractiveWebApp:
                 'reference_annotations': batch_results['reference_annotations'],
                 'videos': []
             }
+
+            # per_video_annotations 저장 (있으면)
+            if hasattr(self, 'per_video_annotations') and self.per_video_annotations:
+                metadata['per_video_annotations'] = self.per_video_annotations
+            elif 'per_video_annotations' in batch_results:
+                metadata['per_video_annotations'] = batch_results['per_video_annotations']
 
             # 각 비디오 결과를 개별 폴더에 저장
             for video_result in batch_results['videos']:
@@ -1220,6 +1206,873 @@ class SAMInteractiveWebApp:
             print(error_msg)
             return "", error_msg
 
+    def generate_batch_visualization(
+        self,
+        session_path: str = None,
+        output_format: str = "images",
+        progress=None
+    ) -> Tuple[str, str]:
+        """
+        Batch 결과의 마스크 시각화 생성
+
+        Args:
+            session_path: 세션 경로 (None이면 현재 batch_results 사용)
+            output_format: "images" (개별 이미지) 또는 "video" (비디오)
+            progress: Gradio progress
+
+        Returns:
+            (출력 경로, 상태 메시지)
+        """
+        try:
+            import tempfile
+
+            # 데이터 소스 결정
+            if session_path:
+                session_dir = Path(session_path)
+                if not session_dir.exists():
+                    return "", "❌ 세션 경로를 찾을 수 없습니다"
+
+                # 메타데이터 로드
+                metadata_path = session_dir / "session_metadata.json"
+                if not metadata_path.exists():
+                    return "", "❌ session_metadata.json을 찾을 수 없습니다"
+
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+
+                video_dirs = [session_dir / v['saved_dir'] for v in metadata.get('videos', [])]
+            elif hasattr(self, 'batch_results') and self.batch_results:
+                # 임시 결과 사용
+                temp_dir = Path(self.batch_results['temp_dir'])
+                video_dirs = [Path(v['result_dir']) for v in self.batch_results['videos']]
+            else:
+                return "", "❌ 시각화할 데이터가 없습니다. 먼저 Batch 처리를 실행하거나 세션을 로드하세요."
+
+            # 출력 디렉토리 생성
+            vis_output_dir = Path(self.default_output_dir) / "visualizations" / f"vis_{Path(tempfile.mktemp()).name[-8:]}"
+            vis_output_dir.mkdir(parents=True, exist_ok=True)
+
+            total_frames = 0
+            processed_frames = 0
+
+            # 전체 프레임 수 계산
+            for video_dir in video_dirs:
+                if video_dir.exists():
+                    frame_dirs = [d for d in video_dir.iterdir() if d.is_dir() and d.name.startswith('frame_')]
+                    total_frames += len(frame_dirs)
+
+            if progress:
+                progress(0, desc="🎨 시각화 생성 중...")
+
+            # 각 비디오 처리
+            for video_idx, video_dir in enumerate(video_dirs):
+                if not video_dir.exists():
+                    continue
+
+                video_name = video_dir.name
+                video_vis_dir = vis_output_dir / video_name
+                video_vis_dir.mkdir(exist_ok=True)
+
+                frame_dirs = sorted([d for d in video_dir.iterdir() if d.is_dir() and d.name.startswith('frame_')])
+
+                for frame_dir in frame_dirs:
+                    original_path = frame_dir / "original.png"
+                    mask_path = frame_dir / "mask.png"
+
+                    if not original_path.exists() or not mask_path.exists():
+                        continue
+
+                    # 이미지 로드
+                    original = cv2.imread(str(original_path))
+                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+                    if original is None or mask is None:
+                        continue
+
+                    # 마스크 오버레이 생성 (녹색, 40% 투명도)
+                    overlay = original.copy()
+                    mask_bool = mask > 127
+                    overlay[mask_bool] = overlay[mask_bool] * 0.6 + np.array([0, 255, 0]) * 0.4
+
+                    # 마스크 윤곽선 추가 (빨간색)
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
+
+                    # 저장
+                    vis_path = video_vis_dir / f"{frame_dir.name}_vis.png"
+                    cv2.imwrite(str(vis_path), overlay.astype(np.uint8))
+
+                    processed_frames += 1
+                    if progress and total_frames > 0:
+                        progress(processed_frames / total_frames, desc=f"🎨 {video_name}: {frame_dir.name}")
+
+                # 비디오 생성 (선택적)
+                if output_format == "video":
+                    vis_images = sorted(video_vis_dir.glob("*_vis.png"))
+                    if vis_images:
+                        first_img = cv2.imread(str(vis_images[0]))
+                        h, w = first_img.shape[:2]
+
+                        video_path = vis_output_dir / f"{video_name}_visualization.mp4"
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        out = cv2.VideoWriter(str(video_path), fourcc, 10, (w, h))
+
+                        for img_path in vis_images:
+                            img = cv2.imread(str(img_path))
+                            out.write(img)
+
+                        out.release()
+
+            if progress:
+                progress(1.0, desc="✅ 시각화 완료!")
+
+            status = f"""
+### 🎨 시각화 생성 완료 ✅
+
+- **출력 경로**: `{vis_output_dir}`
+- **처리된 프레임**: {processed_frames}개
+- **비디오 수**: {len(video_dirs)}개
+- **형식**: {output_format}
+
+각 비디오 폴더에서 `*_vis.png` 파일을 확인하세요.
+녹색 영역이 마스크, 빨간 윤곽선이 경계입니다.
+"""
+
+            return str(vis_output_dir), status
+
+        except Exception as e:
+            import traceback
+            return "", f"❌ 시각화 실패: {str(e)}\n{traceback.format_exc()}"
+
+    def get_batch_frame_list(self) -> List[Dict]:
+        """
+        Batch 결과의 전체 프레임 목록 반환 (슬라이더용)
+
+        Returns:
+            프레임 정보 리스트 [{video_idx, video_name, frame_idx, frame_dir}, ...]
+        """
+        frame_list = []
+
+        if not hasattr(self, 'batch_results') or not self.batch_results:
+            return frame_list
+
+        for video_result in self.batch_results['videos']:
+            video_dir = Path(video_result['result_dir'])
+            video_name = video_result['video_name']
+            video_idx = video_result['video_idx']
+
+            if not video_dir.exists():
+                continue
+
+            frame_dirs = sorted([d for d in video_dir.iterdir() if d.is_dir() and d.name.startswith('frame_')])
+
+            for frame_dir in frame_dirs:
+                frame_idx = int(frame_dir.name.split('_')[1])
+                frame_list.append({
+                    'video_idx': video_idx,
+                    'video_name': video_name,
+                    'frame_idx': frame_idx,
+                    'frame_dir': str(frame_dir)
+                })
+
+        return frame_list
+
+    def get_visualization_frame(self, global_idx: int) -> Tuple[np.ndarray, str]:
+        """
+        특정 인덱스의 시각화 프레임 반환 (슬라이더용)
+
+        Args:
+            global_idx: 전체 프레임 리스트에서의 인덱스
+
+        Returns:
+            (시각화 이미지, 상태 텍스트)
+        """
+        frame_list = self.get_batch_frame_list()
+
+        if not frame_list:
+            return None, "결과가 없습니다. 먼저 Batch Propagate를 실행하세요."
+
+        if global_idx < 0 or global_idx >= len(frame_list):
+            return None, f"유효하지 않은 인덱스: {global_idx}"
+
+        frame_info = frame_list[global_idx]
+        frame_dir = Path(frame_info['frame_dir'])
+
+        original_path = frame_dir / "original.png"
+        mask_path = frame_dir / "mask.png"
+
+        if not original_path.exists() or not mask_path.exists():
+            return None, f"프레임 파일을 찾을 수 없습니다: {frame_dir}"
+
+        # 이미지 로드
+        original = cv2.imread(str(original_path))
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+        if original is None or mask is None:
+            return None, "이미지 로드 실패"
+
+        # BGR → RGB 변환
+        original = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+
+        # 마스크 오버레이 생성 (녹색, 40% 투명도)
+        overlay = original.copy().astype(np.float32)
+        mask_bool = mask > 127
+        overlay[mask_bool] = overlay[mask_bool] * 0.6 + np.array([0, 255, 0]) * 0.4
+
+        # 마스크 윤곽선 추가 (빨간색)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, contours, -1, (255, 0, 0), 2)
+
+        status = f"📹 **{frame_info['video_name']}** | 🖼️ Frame {frame_info['frame_idx']} | ({global_idx + 1}/{len(frame_list)})"
+
+        return overlay.astype(np.uint8), status
+
+    # ========== Per-Video Annotation Support ==========
+
+    def _draw_points_on_frame(self, frame: np.ndarray) -> np.ndarray:
+        """
+        프레임에 현재 annotation points 표시
+
+        Args:
+            frame: RGB 프레임 이미지
+
+        Returns:
+            points가 표시된 이미지
+        """
+        frame_with_points = frame.copy()
+
+        # Foreground points (녹색)
+        for px, py in self.annotations['foreground']:
+            cv2.circle(frame_with_points, (px, py), 5, (0, 255, 0), -1)
+            cv2.circle(frame_with_points, (px, py), 7, (255, 255, 255), 2)
+
+        # Background points (빨간색)
+        for px, py in self.annotations['background']:
+            cv2.circle(frame_with_points, (px, py), 5, (255, 0, 0), -1)
+            cv2.circle(frame_with_points, (px, py), 7, (255, 255, 255), 2)
+
+        return frame_with_points
+
+    def init_per_video_annotations(self):
+        """비디오별 annotation 저장소 초기화"""
+        if not hasattr(self, 'per_video_annotations'):
+            self.per_video_annotations = {}
+
+    def save_current_annotation_for_video(self, video_label: str) -> str:
+        """
+        현재 annotation을 특정 비디오용으로 저장
+
+        Args:
+            video_label: 비디오 레이블 (UI에서 선택한 것)
+
+        Returns:
+            상태 메시지
+        """
+        self.init_per_video_annotations()
+
+        if len(self.annotations['foreground']) == 0:
+            return f"❌ Annotation이 없습니다. 먼저 foreground point를 추가하세요."
+
+        # 레이블 → 경로 변환
+        if hasattr(self, 'batch_video_label_map') and video_label in self.batch_video_label_map:
+            video_path = self.batch_video_label_map[video_label]
+        else:
+            video_path = video_label
+
+        self.per_video_annotations[video_path] = {
+            'foreground': self.annotations['foreground'].copy(),
+            'background': self.annotations['background'].copy(),
+            'video_label': video_label
+        }
+
+        fg_count = len(self.annotations['foreground'])
+        bg_count = len(self.annotations['background'])
+
+        return f"✅ **{video_label}** annotation 저장됨 (FG: {fg_count}, BG: {bg_count})"
+
+    def load_video_for_annotation(self, video_label: str) -> Tuple[np.ndarray, str]:
+        """
+        특정 비디오의 첫 프레임을 로드하고 기존 annotation 복원
+
+        Args:
+            video_label: 비디오 레이블
+
+        Returns:
+            (프레임 이미지, 상태 메시지)
+        """
+        self.init_per_video_annotations()
+
+        if not hasattr(self, 'batch_video_label_map'):
+            return None, "❌ 먼저 비디오를 스캔하세요."
+
+        if video_label not in self.batch_video_label_map:
+            return None, f"❌ 비디오를 찾을 수 없습니다: {video_label}"
+
+        video_path = self.batch_video_label_map[video_label]
+
+        # 첫 프레임 추출
+        frames = self.processor.extract_frames(video_path, 0, 1, stride=1)
+        if not frames:
+            return None, f"❌ 프레임 추출 실패: {video_label}"
+
+        # 현재 프레임 설정
+        self.frames = frames
+        self.current_frame_idx = 0
+
+        # 기존 annotation 복원 (있으면)
+        if video_path in self.per_video_annotations:
+            saved = self.per_video_annotations[video_path]
+            self.annotations = {
+                'foreground': saved['foreground'].copy(),
+                'background': saved['background'].copy()
+            }
+            status = f"📹 **{video_label}** 로드 완료 (기존 annotation 복원됨)"
+        else:
+            # 새 비디오면 annotation 초기화
+            self.annotations = {'foreground': [], 'background': []}
+            status = f"📹 **{video_label}** 로드 완료 (새 annotation)"
+
+        # 현재 annotation 표시
+        frame_with_points = self._draw_points_on_frame(frames[0])
+
+        return frame_with_points, status
+
+    def get_per_video_annotation_status(self) -> str:
+        """비디오별 annotation 상태 반환"""
+        self.init_per_video_annotations()
+
+        if not self.per_video_annotations:
+            return "### 📋 비디오별 Annotation: 없음"
+
+        lines = ["### 📋 비디오별 Annotation 현황\n"]
+        for video_path, anno in self.per_video_annotations.items():
+            label = anno.get('video_label', Path(video_path).name)
+            fg = len(anno['foreground'])
+            bg = len(anno['background'])
+            lines.append(f"- **{label}**: FG {fg}개, BG {bg}개")
+
+        return "\n".join(lines)
+
+    def save_per_video_annotations_to_file(self, filename: str = "") -> Tuple[str, str]:
+        """
+        비디오별 annotation을 JSON 파일로 저장 (propagation 전에도 사용 가능)
+
+        Args:
+            filename: 파일 이름 (비어있으면 자동 생성)
+
+        Returns:
+            (저장 경로, 상태 메시지)
+        """
+        self.init_per_video_annotations()
+
+        if not self.per_video_annotations:
+            return "", "❌ 저장할 비디오별 annotation이 없습니다."
+
+        try:
+            from datetime import datetime
+            import json
+
+            # 저장 경로 설정
+            annotations_dir = Path(self.default_output_dir) / "annotations"
+            annotations_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if filename and filename.strip():
+                save_filename = f"{filename.strip()}_{timestamp}.json"
+            else:
+                save_filename = f"per_video_annotations_{timestamp}.json"
+
+            save_path = annotations_dir / save_filename
+
+            # 저장 데이터 구성
+            save_data = {
+                'timestamp': timestamp,
+                'num_videos': len(self.per_video_annotations),
+                'per_video_annotations': self.per_video_annotations
+            }
+
+            with open(save_path, 'w') as f:
+                json.dump(save_data, f, indent=2)
+
+            status = f"""
+### 💾 비디오별 Annotation 저장 완료 ✅
+
+- **파일**: `{save_path}`
+- **비디오 수**: {len(self.per_video_annotations)}개
+
+나중에 **Annotation 로드** 버튼으로 불러올 수 있습니다.
+"""
+            return str(save_path), status
+
+        except Exception as e:
+            import traceback
+            return "", f"❌ 저장 실패: {str(e)}\n{traceback.format_exc()}"
+
+    def load_per_video_annotations_from_file(self, filepath: str) -> Tuple[str, str]:
+        """
+        저장된 비디오별 annotation JSON 파일 로드
+
+        Args:
+            filepath: JSON 파일 경로
+
+        Returns:
+            (상태 텍스트, annotation 상태)
+        """
+        try:
+            import json
+
+            filepath = Path(filepath)
+            if not filepath.exists():
+                return "❌ 파일을 찾을 수 없습니다.", self.get_per_video_annotation_status()
+
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+
+            if 'per_video_annotations' not in data:
+                return "❌ 유효하지 않은 annotation 파일입니다.", self.get_per_video_annotation_status()
+
+            self.per_video_annotations = data['per_video_annotations']
+
+            status = f"""
+### 📂 비디오별 Annotation 로드 완료 ✅
+
+- **파일**: `{filepath}`
+- **비디오 수**: {len(self.per_video_annotations)}개 복원됨
+
+이제 **비디오별 Batch Propagate**를 실행할 수 있습니다.
+"""
+            return status, self.get_per_video_annotation_status()
+
+        except Exception as e:
+            import traceback
+            return f"❌ 로드 실패: {str(e)}", self.get_per_video_annotation_status()
+
+    def scan_annotation_files(self) -> List[str]:
+        """저장된 annotation 파일 목록 스캔"""
+        annotations_dir = Path(self.default_output_dir) / "annotations"
+        if not annotations_dir.exists():
+            return []
+
+        files = sorted(annotations_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        return [str(f) for f in files]
+
+    # ========== Preview Video Generation ==========
+
+    def get_batch_video_list(self) -> List[Dict]:
+        """
+        Batch 결과의 비디오 목록 반환
+
+        Returns:
+            비디오 정보 리스트 [{video_idx, video_name, result_dir, num_frames}, ...]
+        """
+        if not hasattr(self, 'batch_results') or not self.batch_results:
+            return []
+
+        video_list = []
+        for video_result in self.batch_results['videos']:
+            video_dir = Path(video_result['result_dir'])
+            if video_dir.exists():
+                num_frames = len(list(video_dir.glob("frame_*")))
+                video_list.append({
+                    'video_idx': video_result['video_idx'],
+                    'video_name': video_result['video_name'],
+                    'result_dir': str(video_dir),
+                    'num_frames': num_frames
+                })
+        return video_list
+
+    def get_video_frame_for_preview(
+        self,
+        video_idx: int,
+        frame_idx: int,
+        display_mode: str = "overlay"
+    ) -> Tuple[np.ndarray, str]:
+        """
+        특정 비디오의 특정 프레임 반환 (프리뷰용)
+
+        Args:
+            video_idx: 비디오 인덱스
+            frame_idx: 프레임 인덱스
+            display_mode: "mask", "overlay", "side_by_side"
+
+        Returns:
+            (이미지, 상태 텍스트)
+        """
+        video_list = self.get_batch_video_list()
+
+        if not video_list:
+            return None, "결과가 없습니다."
+
+        # video_idx로 비디오 찾기
+        video_info = None
+        for v in video_list:
+            if v['video_idx'] == video_idx:
+                video_info = v
+                break
+
+        if video_info is None:
+            return None, f"비디오 {video_idx}를 찾을 수 없습니다."
+
+        video_dir = Path(video_info['result_dir'])
+        frame_dirs = sorted([d for d in video_dir.iterdir() if d.is_dir() and d.name.startswith('frame_')])
+
+        if frame_idx < 0 or frame_idx >= len(frame_dirs):
+            return None, f"유효하지 않은 프레임 인덱스: {frame_idx}"
+
+        frame_dir = frame_dirs[frame_idx]
+        original_path = frame_dir / "original.png"
+        mask_path = frame_dir / "mask.png"
+
+        if not original_path.exists() or not mask_path.exists():
+            return None, f"프레임 파일 없음: {frame_dir}"
+
+        # 이미지 로드
+        original = cv2.imread(str(original_path))
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+        if original is None or mask is None:
+            return None, "이미지 로드 실패"
+
+        # BGR → RGB
+        original = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+
+        # 디스플레이 모드에 따라 출력
+        if display_mode == "mask":
+            # Binary mask (3채널로 변환)
+            result = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+
+        elif display_mode == "overlay":
+            # 마스크 오버레이 (녹색, 40% 투명도)
+            result = original.copy().astype(np.float32)
+            mask_bool = mask > 127
+            result[mask_bool] = result[mask_bool] * 0.6 + np.array([0, 255, 0]) * 0.4
+            # 윤곽선 추가 (빨간색)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(result, contours, -1, (255, 0, 0), 2)
+            result = result.astype(np.uint8)
+
+        elif display_mode == "side_by_side":
+            # 원본 | 마스크 | 오버레이 (3개 나란히, 저해상도)
+            h, w = original.shape[:2]
+            scale = min(1.0, 400 / w)  # 최대 너비 400px
+            new_w, new_h = int(w * scale), int(h * scale)
+
+            orig_small = cv2.resize(original, (new_w, new_h))
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+            mask_small = cv2.resize(mask_rgb, (new_w, new_h))
+
+            overlay = original.copy().astype(np.float32)
+            mask_bool = mask > 127
+            overlay[mask_bool] = overlay[mask_bool] * 0.6 + np.array([0, 255, 0]) * 0.4
+            overlay_small = cv2.resize(overlay.astype(np.uint8), (new_w, new_h))
+
+            result = np.hstack([orig_small, mask_small, overlay_small])
+
+        else:
+            result = original
+
+        status = f"📹 **{video_info['video_name']}** | Frame {frame_idx + 1}/{len(frame_dirs)}"
+        return result, status
+
+    def generate_preview_video(
+        self,
+        video_idx: int,
+        display_mode: str = "overlay",
+        fps: int = 15,
+        scale: float = 0.5,
+        progress=None
+    ) -> Tuple[str, str]:
+        """
+        특정 비디오의 프리뷰 영상 생성 (저해상도, 빠른 확인용)
+
+        Args:
+            video_idx: 비디오 인덱스
+            display_mode: "mask", "overlay", "side_by_side"
+            fps: 프레임 레이트
+            scale: 해상도 스케일 (0.25 ~ 1.0)
+
+        Returns:
+            (비디오 경로, 상태 메시지)
+        """
+        video_list = self.get_batch_video_list()
+
+        if not video_list:
+            return "", "결과가 없습니다. 먼저 Batch Propagate를 실행하세요."
+
+        # video_idx로 비디오 찾기
+        video_info = None
+        for v in video_list:
+            if v['video_idx'] == video_idx:
+                video_info = v
+                break
+
+        if video_info is None:
+            return "", f"비디오 {video_idx}를 찾을 수 없습니다."
+
+        try:
+            video_dir = Path(video_info['result_dir'])
+            frame_dirs = sorted([d for d in video_dir.iterdir() if d.is_dir() and d.name.startswith('frame_')])
+
+            if not frame_dirs:
+                return "", "프레임이 없습니다."
+
+            # 출력 경로
+            preview_dir = Path(self.default_output_dir) / "previews"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+
+            video_name = Path(video_info['video_name']).stem
+            output_path = preview_dir / f"{video_name}_{display_mode}_preview.mp4"
+
+            # 첫 프레임으로 크기 결정
+            first_frame, _ = self.get_video_frame_for_preview(video_idx, 0, display_mode)
+            if first_frame is None:
+                return "", "첫 프레임 로드 실패"
+
+            h, w = first_frame.shape[:2]
+            new_w, new_h = int(w * scale), int(h * scale)
+            # 짝수로 맞추기 (코덱 요구사항)
+            new_w = new_w if new_w % 2 == 0 else new_w + 1
+            new_h = new_h if new_h % 2 == 0 else new_h + 1
+
+            # VideoWriter 설정
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(str(output_path), fourcc, fps, (new_w, new_h))
+
+            if progress:
+                progress(0, desc=f"🎬 프리뷰 생성 중: {video_name}")
+
+            for i, frame_dir in enumerate(frame_dirs):
+                frame, _ = self.get_video_frame_for_preview(video_idx, i, display_mode)
+                if frame is not None:
+                    # 리사이즈 및 BGR 변환
+                    frame_resized = cv2.resize(frame, (new_w, new_h))
+                    frame_bgr = cv2.cvtColor(frame_resized, cv2.COLOR_RGB2BGR)
+                    out.write(frame_bgr)
+
+                if progress:
+                    progress((i + 1) / len(frame_dirs), desc=f"🎬 {video_name}: {i+1}/{len(frame_dirs)}")
+
+            out.release()
+
+            if progress:
+                progress(1.0, desc="✅ 프리뷰 생성 완료")
+
+            status = f"""
+### 🎬 프리뷰 영상 생성 완료 ✅
+
+- **비디오**: {video_info['video_name']}
+- **모드**: {display_mode}
+- **프레임 수**: {len(frame_dirs)}
+- **FPS**: {fps}
+- **해상도**: {new_w}x{new_h} (원본의 {int(scale*100)}%)
+- **파일**: `{output_path}`
+"""
+            return str(output_path), status
+
+        except Exception as e:
+            import traceback
+            return "", f"❌ 프리뷰 생성 실패: {str(e)}\n{traceback.format_exc()}"
+
+    def batch_propagate_with_per_video_annotations(
+        self,
+        target_frames: int = 100,
+        selected_videos: List[str] = None,
+        progress=gr.Progress()
+    ) -> Tuple[str, str]:
+        """
+        비디오별 개별 annotation을 사용한 Batch Propagation
+
+        각 비디오마다 해당 비디오에 저장된 annotation 사용.
+        annotation이 없는 비디오는 기본 reference annotation 사용.
+        """
+        self.init_per_video_annotations()
+
+        if not hasattr(self, 'batch_videos') or not self.batch_videos:
+            return "먼저 비디오를 스캔하세요", "❌ 비디오 없음"
+
+        # 기본 reference annotation (현재 UI에 있는 것)
+        default_annotations = {
+            'foreground': self.annotations['foreground'].copy(),
+            'background': self.annotations['background'].copy()
+        }
+
+        # per-video annotation 사용 가능한 비디오 수 확인
+        if not self.per_video_annotations and len(default_annotations['foreground']) == 0:
+            return "Annotation이 필요합니다. 최소 1개의 foreground point가 필요합니다.", "❌ Annotation 없음"
+
+        try:
+            import tempfile
+            import shutil
+            import torch
+
+            batch_temp_dir = Path(tempfile.mkdtemp(prefix="sam3d_batch_"))
+
+            # 선택된 비디오 필터링
+            if selected_videos and len(selected_videos) > 0:
+                videos_to_process = []
+                if hasattr(self, 'batch_video_label_map'):
+                    for label in selected_videos:
+                        if label in self.batch_video_label_map:
+                            videos_to_process.append(self.batch_video_label_map[label])
+            else:
+                videos_to_process = self.batch_videos
+
+            if not videos_to_process:
+                return "처리할 비디오를 선택하세요", "❌ 선택된 비디오 없음"
+
+            total_videos = len(videos_to_process)
+            total_processed_frames = 0
+            video_results = []
+
+            progress(0, desc=f"Batch 처리 시작: {total_videos}개 비디오...")
+
+            for video_idx, video_path in enumerate(videos_to_process):
+                video_name = Path(video_path).name
+                progress(video_idx / total_videos, desc=f"처리 중: {video_name} ({video_idx+1}/{total_videos})")
+
+                # 해당 비디오의 annotation 선택
+                if video_path in self.per_video_annotations:
+                    video_annotations = self.per_video_annotations[video_path]
+                    print(f"📹 {video_name}: 개별 annotation 사용")
+                else:
+                    video_annotations = default_annotations
+                    print(f"📹 {video_name}: 기본 annotation 사용")
+
+                if len(video_annotations['foreground']) == 0:
+                    print(f"⚠️ {video_name}: annotation 없음, 건너뜀")
+                    continue
+
+                # 비디오 정보 찾기
+                matching_info = None
+                for info in self.batch_video_info:
+                    if info['path'] == video_path:
+                        matching_info = info
+                        break
+
+                if matching_info is None:
+                    continue
+
+                num_frames = matching_info['frames']
+                calculated_stride = max(1, num_frames // target_frames)
+
+                # 프레임 추출
+                frames = self.processor.extract_frames(video_path, 0, num_frames, stride=calculated_stride)
+                if not frames:
+                    continue
+
+                # 임시 디렉토리에 프레임 저장
+                video_temp_dir = tempfile.mkdtemp(prefix=f"sam3d_video_{video_idx}_")
+
+                try:
+                    for idx, frame in enumerate(frames):
+                        frame_path = Path(video_temp_dir) / f"{idx:05d}.jpg"
+                        cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+                    # SAM 2 inference
+                    if self.sam2_video_predictor is not None:
+                        inference_state = self.sam2_video_predictor.init_state(video_path=video_temp_dir)
+
+                        # 해당 비디오의 annotations 적용
+                        point_coords = []
+                        point_labels = []
+
+                        for px, py in video_annotations['foreground']:
+                            point_coords.append([px, py])
+                            point_labels.append(1)
+
+                        for px, py in video_annotations['background']:
+                            point_coords.append([px, py])
+                            point_labels.append(0)
+
+                        point_coords = np.array(point_coords, dtype=np.float32)
+                        point_labels = np.array(point_labels, dtype=np.int32)
+
+                        self.sam2_video_predictor.add_new_points_or_box(
+                            inference_state=inference_state,
+                            frame_idx=0,
+                            obj_id=1,
+                            points=point_coords,
+                            labels=point_labels,
+                        )
+
+                        # Propagate
+                        video_segments = {}
+                        for frame_idx, obj_ids, mask_logits in self.sam2_video_predictor.propagate_in_video(
+                            inference_state,
+                            start_frame_idx=0
+                        ):
+                            video_segments[frame_idx] = (mask_logits[0] > 0.0).cpu().numpy()
+
+                        # 결과 저장
+                        video_result_dir = batch_temp_dir / f"video_{video_idx:03d}"
+                        video_result_dir.mkdir(exist_ok=True)
+
+                        for frame_idx, mask in video_segments.items():
+                            frame_dir = video_result_dir / f"frame_{frame_idx:04d}"
+                            frame_dir.mkdir(exist_ok=True)
+                            cv2.imwrite(str(frame_dir / "original.png"), cv2.cvtColor(frames[frame_idx], cv2.COLOR_RGB2BGR))
+                            mask_uint8 = mask.squeeze().astype(np.uint8) * 255
+                            cv2.imwrite(str(frame_dir / "mask.png"), mask_uint8)
+
+                        total_processed_frames += len(video_segments)
+
+                        video_results.append({
+                            'video_idx': video_idx,
+                            'video_name': video_name,
+                            'video_path': video_path,
+                            'frames': len(video_segments),
+                            'result_dir': str(video_result_dir),
+                            'annotation_type': 'per_video' if video_path in self.per_video_annotations else 'default'
+                        })
+
+                finally:
+                    shutil.rmtree(video_temp_dir, ignore_errors=True)
+                    if 'inference_state' in locals():
+                        del inference_state
+                    if 'video_segments' in locals():
+                        del video_segments
+                    del frames
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+
+            # 결과 저장
+            self.batch_results = {
+                'temp_dir': str(batch_temp_dir),
+                'videos': video_results,
+                'total_frames': total_processed_frames,
+                'target_frames': target_frames,
+                'reference_annotations': default_annotations,
+                'per_video_annotations': {k: v for k, v in self.per_video_annotations.items()}
+            }
+
+            progress(1.0, desc="Batch 처리 완료!")
+
+            # 개별 annotation 사용 비디오 수 카운트
+            per_video_count = sum(1 for v in video_results if v.get('annotation_type') == 'per_video')
+            default_count = len(video_results) - per_video_count
+
+            status = f"""
+### 🎉 Batch Propagation 완료 (비디오별 Annotation) ✅
+
+- **처리된 비디오**: {len(video_results)} / {total_videos}
+  - 개별 annotation: {per_video_count}개
+  - 기본 annotation: {default_count}개
+- **총 프레임 수**: {total_processed_frames}
+- **임시 저장 위치**: {batch_temp_dir}
+
+### 다음 단계:
+- **결과 확인**: 슬라이더로 프레임별 마스크 확인
+- **Export to Fauna**: 통합 데이터셋 생성
+"""
+
+            return status, "✅ 완료"
+
+        except Exception as e:
+            import traceback
+            return f"❌ Batch 처리 실패:\n{str(e)}\n{traceback.format_exc()}", "❌ 실패"
+
     def load_batch_session(self, session_path: str) -> Tuple[str, str]:
         """
         저장된 Batch 세션 로드
@@ -1291,7 +2144,17 @@ class SAMInteractiveWebApp:
                 'reference_annotations': metadata['reference_annotations']
             }
 
+            # per_video_annotations 복원 (있으면)
+            if 'per_video_annotations' in metadata:
+                self.per_video_annotations = metadata['per_video_annotations']
+                print(f"  ✓ 비디오별 annotation {len(self.per_video_annotations)}개 복원됨")
+            else:
+                self.init_per_video_annotations()
+
             print(f"\n✅ Batch 세션 로드 완료!")
+
+            # per_video_annotations 수 확인
+            per_video_count = len(self.per_video_annotations) if hasattr(self, 'per_video_annotations') else 0
 
             status = f"""
 ### 📂 Batch 세션 로드 완료 ✅
@@ -1301,6 +2164,7 @@ class SAMInteractiveWebApp:
 - **비디오 수**: {len(video_results)}
 - **총 프레임 수**: {metadata['total_frames']}
 - **목표 프레임 수**: {metadata['target_frames']} (각 비디오당)
+- **비디오별 Annotation**: {per_video_count}개 복원됨
 
 ### 로드된 비디오:
 """
@@ -1321,6 +2185,116 @@ class SAMInteractiveWebApp:
             error_msg = f"❌ Batch 세션 로드 실패:\n{str(e)}\n{traceback.format_exc()}"
             print(error_msg)
             return error_msg, ""
+
+    def delete_batch_session(self, session_path: str) -> Tuple[str, List[str]]:
+        """
+        Batch 세션 삭제
+
+        Args:
+            session_path: 세션 디렉토리 경로
+
+        Returns:
+            (상태 메시지, 업데이트된 세션 목록)
+        """
+        import shutil
+
+        if not session_path:
+            return "❌ 삭제할 세션을 선택하세요", []
+
+        session_dir = Path(session_path)
+        if not session_dir.exists():
+            return f"❌ 세션 디렉토리가 존재하지 않습니다: {session_path}", []
+
+        # 메타데이터 확인
+        metadata_path = session_dir / "session_metadata.json"
+        if not metadata_path.exists():
+            return f"❌ 유효한 세션 디렉토리가 아닙니다: {session_path}", []
+
+        try:
+            session_name = session_dir.name
+            shutil.rmtree(session_dir)
+            print(f"🗑️ 세션 삭제됨: {session_dir}")
+
+            # 세션 목록 새로고침
+            sessions_dir = Path(self.default_output_dir) / "sessions"
+            sessions = []
+            if sessions_dir.exists():
+                for s_dir in sessions_dir.iterdir():
+                    if s_dir.is_dir() and (s_dir / "session_metadata.json").exists():
+                        sessions.append(str(s_dir))
+
+            return f"✅ 세션 '{session_name}' 삭제됨", sorted(sessions, reverse=True)
+
+        except Exception as e:
+            return f"❌ 세션 삭제 실패: {str(e)}", []
+
+    def rename_batch_session(self, session_path: str, new_name: str) -> Tuple[str, List[str]]:
+        """
+        Batch 세션 이름 변경
+
+        Args:
+            session_path: 세션 디렉토리 경로
+            new_name: 새 세션 이름
+
+        Returns:
+            (상태 메시지, 업데이트된 세션 목록)
+        """
+        import json
+
+        if not session_path:
+            return "❌ 이름을 변경할 세션을 선택하세요", []
+
+        if not new_name or not new_name.strip():
+            return "❌ 새 이름을 입력하세요", []
+
+        new_name = new_name.strip()
+
+        # 유효한 파일명 문자만 허용
+        invalid_chars = '<>:"/\\|?*'
+        if any(c in new_name for c in invalid_chars):
+            return f"❌ 세션 이름에 사용할 수 없는 문자가 있습니다: {invalid_chars}", []
+
+        session_dir = Path(session_path)
+        if not session_dir.exists():
+            return f"❌ 세션 디렉토리가 존재하지 않습니다: {session_path}", []
+
+        # 메타데이터 확인
+        metadata_path = session_dir / "session_metadata.json"
+        if not metadata_path.exists():
+            return f"❌ 유효한 세션 디렉토리가 아닙니다: {session_path}", []
+
+        try:
+            old_name = session_dir.name
+            new_session_dir = session_dir.parent / new_name
+
+            if new_session_dir.exists():
+                return f"❌ 이미 같은 이름의 세션이 존재합니다: {new_name}", []
+
+            # 디렉토리 이름 변경
+            session_dir.rename(new_session_dir)
+
+            # 메타데이터 업데이트
+            new_metadata_path = new_session_dir / "session_metadata.json"
+            with open(new_metadata_path, 'r') as f:
+                metadata = json.load(f)
+            metadata['session_id'] = new_name
+            with open(new_metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+            print(f"✏️ 세션 이름 변경: {old_name} → {new_name}")
+
+            # 세션 목록 새로고침
+            sessions_dir = Path(self.default_output_dir) / "sessions"
+            sessions = []
+            if sessions_dir.exists():
+                for s_dir in sessions_dir.iterdir():
+                    if s_dir.is_dir() and (s_dir / "session_metadata.json").exists():
+                        sessions.append(str(s_dir))
+
+            return f"✅ 세션 이름 변경됨: '{old_name}' → '{new_name}'", sorted(sessions, reverse=True)
+
+        except Exception as e:
+            return f"❌ 세션 이름 변경 실패: {str(e)}", []
 
     def export_batch_to_fauna(self, output_name: str = "fauna_dataset", file_structure: str = "video_folders") -> Tuple[str, str]:
         """
@@ -2858,10 +3832,21 @@ meshlab {output_path}
 
             progress(0, desc="Fauna 데이터셋 준비 중...")
 
-            # 출력 디렉토리 설정 - outputs 하위에 체계적으로 저장
+            # 출력 디렉토리 설정 - session_id 기반으로 저장
             project_root = Path(__file__).parent.parent
             fauna_root = project_root / "outputs" / "fauna_datasets"
-            sequence_name = self._find_next_sequence(fauna_root, animal_name)
+
+            # session_id 결정: current_session_path가 있으면 해당 ID 사용, 없으면 timestamp 생성
+            if self.current_session_path:
+                # 기존 세션 ID 사용 (폴더 이름에서 추출)
+                sequence_name = Path(self.current_session_path).name
+                print(f"   Using existing session ID: {sequence_name}")
+            else:
+                # 세션이 저장되지 않은 경우 timestamp 기반 ID 생성
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                sequence_name = f"unsaved_{timestamp}"
+                print(f"   Generated new session ID: {sequence_name}")
+
             output_dir = fauna_root / animal_name / "train" / sequence_name
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3165,9 +4150,10 @@ dataset:
             gr.Markdown("""
             # 🎬 SAM 3D GUI - 통합 웹 인터페이스
 
-            **두 가지 작업 모드:**
-            - 🚀 **Quick Mode**: 자동 세그멘테이션 & 모션 감지 (빠름)
-            - 🎨 **Interactive Mode**: 수동 annotation & propagation (정확함)
+            **작업 모드:**
+            - 🎨 **Interactive Mode**: 단일 비디오 수동 annotation & propagation
+            - 📦 **Batch Mode**: 다중 비디오 일괄 처리 및 세션 관리
+            - 📝 **Lite Annotator**: 효율적 단일 프레임 annotation
             """)
 
             # ===== SAM2 모델 상태 (컴팩트 한 줄) =====
@@ -3679,6 +4665,48 @@ dataset:
                                 batch_segment_btn = gr.Button("🎯 Segment (미리보기)", variant="secondary", size="sm")
                                 batch_clear_btn = gr.Button("🗑️ Points 초기화", size="sm")
 
+                            # ===== 비디오별 개별 Annotation 섹션 =====
+                            with gr.Accordion("🎬 비디오별 개별 Annotation (선택사항)", open=False):
+                                gr.Markdown("""
+**각 비디오마다 개별 annotation을 지정하면 더 정확한 결과를 얻을 수 있습니다.**
+1. 비디오 선택 → 로드 → annotation → 저장
+2. 모든 비디오 annotation 후 → "비디오별 Batch Propagate" 실행
+                                """)
+
+                                batch_per_video_select = gr.Dropdown(
+                                    label="비디오 선택",
+                                    choices=[],
+                                    interactive=True,
+                                    info="annotation할 비디오를 선택하세요"
+                                )
+
+                                with gr.Row():
+                                    batch_load_video_btn = gr.Button("📹 로드", variant="secondary", size="sm")
+                                    batch_save_video_anno_btn = gr.Button("💾 저장", variant="primary", size="sm")
+
+                                batch_per_video_status = gr.Markdown("### 📋 비디오별 Annotation: 없음")
+
+                                batch_propagate_per_video_btn = gr.Button(
+                                    "🔄 비디오별 Batch Propagate",
+                                    variant="primary",
+                                    size="lg"
+                                )
+
+                                gr.Markdown("---")
+                                gr.Markdown("**💾 Annotation 파일 저장/로드** (propagation 전에도 가능)")
+
+                                with gr.Row():
+                                    batch_save_anno_file_btn = gr.Button("💾 Annotation 파일 저장", size="sm")
+                                    batch_scan_anno_files_btn = gr.Button("🔍 파일 스캔", size="sm")
+
+                                batch_anno_file_dropdown = gr.Dropdown(
+                                    label="저장된 Annotation 파일",
+                                    choices=[],
+                                    interactive=True
+                                )
+
+                                batch_load_anno_file_btn = gr.Button("📂 Annotation 파일 로드", variant="secondary", size="sm")
+
                             gr.Markdown("### ⚙️ Batch 설정")
 
                             with gr.Row():
@@ -3696,14 +4724,23 @@ dataset:
                             gr.Markdown("### 💾 세션 관리")
 
                             # 세션 로드
-                            with gr.Accordion("📂 세션 불러오기", open=False):
+                            with gr.Accordion("📂 세션 불러오기 / 관리", open=False):
                                 batch_session_scan_btn = gr.Button("🔍 세션 스캔", size="sm")
                                 batch_load_session_dropdown = gr.Dropdown(
                                     label="세션 선택",
                                     choices=[],
                                     interactive=True
                                 )
-                                batch_load_session_btn = gr.Button("📂 세션 로드", variant="secondary")
+                                with gr.Row():
+                                    batch_load_session_btn = gr.Button("📂 로드", variant="secondary", size="sm")
+                                    batch_delete_session_btn = gr.Button("🗑️ 삭제", variant="stop", size="sm")
+
+                                with gr.Accordion("✏️ 세션 이름 변경", open=False):
+                                    batch_rename_session_input = gr.Textbox(
+                                        label="새 이름",
+                                        placeholder="새 세션 이름 입력"
+                                    )
+                                    batch_rename_session_btn = gr.Button("✏️ 이름 변경", size="sm")
 
                             # 세션 저장 및 Export
                             batch_session_name = gr.Textbox(
@@ -3729,7 +4766,7 @@ dataset:
 
                         with gr.Column(scale=2):
                             batch_image_display = gr.Image(
-                                label="Reference Frame",
+                                label="Reference Frame / 결과 시각화",
                                 type="numpy"
                             )
 
@@ -3739,6 +4776,90 @@ dataset:
                                 label="출력 경로",
                                 interactive=False
                             )
+
+                            # ===== 결과 시각화 & 퀄리티 체크 섹션 =====
+                            with gr.Accordion("🎬 결과 시각화 & 퀄리티 체크", open=True):
+                                gr.Markdown("**비디오별로 마스크 결과를 빠르게 확인하세요**")
+
+                                # 비디오 선택
+                                with gr.Row():
+                                    batch_preview_video_select = gr.Dropdown(
+                                        label="📹 비디오 선택",
+                                        choices=[],
+                                        interactive=True,
+                                        scale=2
+                                    )
+                                    batch_preview_refresh_btn = gr.Button("🔄", size="sm", scale=0)
+
+                                # 디스플레이 모드
+                                batch_preview_mode = gr.Radio(
+                                    label="표시 모드",
+                                    choices=[
+                                        ("🎭 Binary Mask", "mask"),
+                                        ("🟢 Overlay", "overlay"),
+                                        ("📊 Side by Side", "side_by_side")
+                                    ],
+                                    value="overlay",
+                                    interactive=True
+                                )
+
+                                # 프레임 슬라이더
+                                batch_vis_slider = gr.Slider(
+                                    label="프레임",
+                                    minimum=0,
+                                    maximum=1,
+                                    value=0,
+                                    step=1,
+                                    interactive=True
+                                )
+
+                                batch_vis_info = gr.Markdown("Batch Propagate 실행 후 결과를 확인할 수 있습니다.")
+
+                                # 프레임 네비게이션
+                                with gr.Row():
+                                    batch_vis_prev_btn = gr.Button("◀️ 이전", size="sm")
+                                    batch_vis_next_btn = gr.Button("▶️ 다음", size="sm")
+                                    batch_vis_first_btn = gr.Button("⏮️ 처음", size="sm")
+                                    batch_vis_last_btn = gr.Button("⏭️ 끝", size="sm")
+
+                                gr.Markdown("---")
+                                gr.Markdown("**🎬 프리뷰 영상 생성** (저해상도 빠른 확인)")
+
+                                with gr.Row():
+                                    batch_preview_fps = gr.Slider(
+                                        label="FPS",
+                                        minimum=5,
+                                        maximum=30,
+                                        value=15,
+                                        step=5,
+                                        scale=1
+                                    )
+                                    batch_preview_scale = gr.Slider(
+                                        label="해상도 %",
+                                        minimum=25,
+                                        maximum=100,
+                                        value=50,
+                                        step=25,
+                                        scale=1
+                                    )
+
+                                with gr.Row():
+                                    batch_gen_preview_btn = gr.Button("🎬 프리뷰 영상 생성", variant="primary")
+                                    batch_gen_all_preview_btn = gr.Button("📦 전체 비디오 프리뷰", variant="secondary")
+
+                                # 비디오 플레이어
+                                batch_preview_video = gr.Video(
+                                    label="프리뷰 영상",
+                                    interactive=False,
+                                    autoplay=True,
+                                    show_download_button=True
+                                )
+
+                                gr.Markdown("---")
+                                gr.Markdown("**📤 내보내기**")
+                                with gr.Row():
+                                    batch_gen_vis_btn = gr.Button("🎨 시각화 이미지 저장", variant="secondary")
+                                    batch_gen_video_btn = gr.Button("📹 전체 영상 생성", variant="secondary")
 
                     # Event handlers
                     batch_scan_btn.click(
@@ -3834,6 +4955,28 @@ dataset:
                         outputs=[batch_status_text, batch_output_path]
                     )
 
+                    # 세션 삭제
+                    def delete_session_handler(session_path):
+                        msg, sessions = self.delete_batch_session(session_path)
+                        return msg, gr.Dropdown(choices=sessions, value=sessions[0] if sessions else None)
+
+                    batch_delete_session_btn.click(
+                        fn=delete_session_handler,
+                        inputs=[batch_load_session_dropdown],
+                        outputs=[batch_status_text, batch_load_session_dropdown]
+                    )
+
+                    # 세션 이름 변경
+                    def rename_session_handler(session_path, new_name):
+                        msg, sessions = self.rename_batch_session(session_path, new_name)
+                        return msg, gr.Dropdown(choices=sessions, value=sessions[0] if sessions else None), ""
+
+                    batch_rename_session_btn.click(
+                        fn=rename_session_handler,
+                        inputs=[batch_load_session_dropdown, batch_rename_session_input],
+                        outputs=[batch_status_text, batch_load_session_dropdown, batch_rename_session_input]
+                    )
+
                     # 세션 저장
                     batch_save_session_btn.click(
                         fn=self.save_batch_session,
@@ -3848,59 +4991,280 @@ dataset:
                         outputs=[batch_output_path, batch_status_text]
                     )
 
-                # ===== Tab 3: Quick Mode =====
-                with gr.Tab("🚀 Quick Mode"):
-                    gr.Markdown("### 빠른 자동 처리")
+                    # ===== 비디오별 Annotation 이벤트 핸들러 =====
 
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            quick_data_dir = gr.Textbox(
-                                label="데이터 디렉토리",
-                                value=self.default_data_dir
-                            )
+                    # 비디오 스캔 시 per-video 드롭다운도 업데이트
+                    def update_per_video_dropdown():
+                        if hasattr(self, 'batch_video_label_map'):
+                            labels = list(self.batch_video_label_map.keys())
+                            return gr.Dropdown(choices=labels, value=labels[0] if labels else None)
+                        return gr.Dropdown(choices=[])
 
-                            quick_scan_btn = gr.Button("📂 비디오 스캔")
-
-                            quick_video_list = gr.Dropdown(
-                                label="비디오 파일",
-                                choices=initial_videos,
-                                value=initial_video,
-                                interactive=True
-                            )
-
-                            with gr.Row():
-                                quick_start = gr.Number(label="시작(초)", value=0.0)
-                                quick_duration = gr.Number(label="길이(초)", value=3.0)
-
-                            quick_threshold = gr.Slider(
-                                label="모션 임계값",
-                                minimum=0, maximum=200, value=50.0, step=1
-                            )
-
-                            quick_method = gr.Radio(
-                                label="세그멘테이션",
-                                choices=["contour", "simple_threshold", "grabcut"],
-                                value="contour"
-                            )
-
-                            quick_process_btn = gr.Button("🚀 자동 처리", variant="primary", size="lg")
-
-                        with gr.Column(scale=2):
-                            quick_image = gr.Image(label="결과", type="numpy", height=500)
-                            quick_status = gr.Markdown("비디오를 선택하고 처리하세요")
-
-                    # Quick Mode 이벤트
-                    quick_scan_btn.click(
-                        fn=lambda d: gr.Dropdown(choices=self.scan_videos(d)),
-                        inputs=[quick_data_dir],
-                        outputs=[quick_video_list]
+                    batch_scan_btn.click(
+                        fn=update_per_video_dropdown,
+                        outputs=[batch_per_video_select]
                     )
 
-                    quick_process_btn.click(
-                        fn=self.quick_process,
-                        inputs=[quick_data_dir, quick_video_list, quick_start,
-                               quick_duration, quick_threshold, quick_method],
-                        outputs=[quick_image, quick_status]
+                    # 비디오 로드 (개별 annotation용)
+                    batch_load_video_btn.click(
+                        fn=self.load_video_for_annotation,
+                        inputs=[batch_per_video_select],
+                        outputs=[batch_image_display, batch_status_text]
+                    )
+
+                    # 비디오별 annotation 저장
+                    def save_video_anno_handler(video_label):
+                        msg = self.save_current_annotation_for_video(video_label)
+                        status = self.get_per_video_annotation_status()
+                        return msg, status
+
+                    batch_save_video_anno_btn.click(
+                        fn=save_video_anno_handler,
+                        inputs=[batch_per_video_select],
+                        outputs=[batch_status_text, batch_per_video_status]
+                    )
+
+                    # ===== Annotation 파일 저장/로드 이벤트 핸들러 =====
+
+                    # Annotation 파일 저장
+                    def save_anno_file_handler():
+                        path, msg = self.save_per_video_annotations_to_file()
+                        status = self.get_per_video_annotation_status()
+                        return msg, status
+
+                    batch_save_anno_file_btn.click(
+                        fn=save_anno_file_handler,
+                        outputs=[batch_status_text, batch_per_video_status]
+                    )
+
+                    # Annotation 파일 스캔
+                    def scan_anno_files_handler():
+                        files = self.scan_annotation_files()
+                        return gr.Dropdown(choices=files, value=files[0] if files else None)
+
+                    batch_scan_anno_files_btn.click(
+                        fn=scan_anno_files_handler,
+                        outputs=[batch_anno_file_dropdown]
+                    )
+
+                    # Annotation 파일 로드
+                    def load_anno_file_handler(filepath):
+                        msg, status = self.load_per_video_annotations_from_file(filepath)
+                        return msg, status
+
+                    batch_load_anno_file_btn.click(
+                        fn=load_anno_file_handler,
+                        inputs=[batch_anno_file_dropdown],
+                        outputs=[batch_status_text, batch_per_video_status]
+                    )
+
+                    # 비디오별 Batch Propagate
+                    batch_propagate_per_video_btn.click(
+                        fn=self.batch_propagate_with_per_video_annotations,
+                        inputs=[batch_target_frames, batch_video_selection],
+                        outputs=[batch_status_text, gr.State()]
+                    )
+
+                    # ===== 결과 시각화 & 퀄리티 체크 이벤트 핸들러 =====
+
+                    # 현재 선택된 비디오 인덱스 저장
+                    current_preview_video_idx = gr.State(value=0)
+
+                    # 비디오 목록 새로고침
+                    def refresh_preview_video_list():
+                        """프리뷰용 비디오 목록 업데이트"""
+                        video_list = self.get_batch_video_list()
+                        if video_list:
+                            choices = [(f"[{v['video_idx']}] {v['video_name']} ({v['num_frames']}f)", v['video_idx']) for v in video_list]
+                            return gr.Dropdown(choices=choices, value=choices[0][1] if choices else None)
+                        return gr.Dropdown(choices=[], value=None)
+
+                    batch_preview_refresh_btn.click(
+                        fn=refresh_preview_video_list,
+                        outputs=[batch_preview_video_select]
+                    )
+
+                    # 비디오 선택 시 슬라이더 범위 업데이트
+                    def on_video_select(video_idx, display_mode):
+                        if video_idx is None:
+                            return None, "비디오를 선택하세요.", gr.Slider(maximum=1, value=0), video_idx
+
+                        video_list = self.get_batch_video_list()
+                        video_info = None
+                        for v in video_list:
+                            if v['video_idx'] == video_idx:
+                                video_info = v
+                                break
+
+                        if video_info is None:
+                            return None, "비디오를 찾을 수 없습니다.", gr.Slider(maximum=1, value=0), video_idx
+
+                        num_frames = video_info['num_frames']
+                        img, status = self.get_video_frame_for_preview(video_idx, 0, display_mode)
+                        return img, status, gr.Slider(maximum=max(1, num_frames-1), value=0), video_idx
+
+                    batch_preview_video_select.change(
+                        fn=on_video_select,
+                        inputs=[batch_preview_video_select, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info, batch_vis_slider, current_preview_video_idx]
+                    )
+
+                    # 디스플레이 모드 변경 시
+                    def on_mode_change(video_idx, frame_idx, display_mode):
+                        if video_idx is None:
+                            return None, "비디오를 선택하세요."
+                        img, status = self.get_video_frame_for_preview(video_idx, int(frame_idx), display_mode)
+                        return img, status
+
+                    batch_preview_mode.change(
+                        fn=on_mode_change,
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info]
+                    )
+
+                    # 슬라이더 변경 시
+                    def on_frame_slider_change(video_idx, frame_idx, display_mode):
+                        if video_idx is None:
+                            return None, "비디오를 선택하세요."
+                        img, status = self.get_video_frame_for_preview(video_idx, int(frame_idx), display_mode)
+                        return img, status
+
+                    batch_vis_slider.change(
+                        fn=on_frame_slider_change,
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info]
+                    )
+
+                    # 프레임 네비게이션 버튼
+                    def frame_nav(video_idx, current_idx, display_mode, direction):
+                        if video_idx is None:
+                            return None, "비디오를 선택하세요.", 0
+
+                        video_list = self.get_batch_video_list()
+                        video_info = None
+                        for v in video_list:
+                            if v['video_idx'] == video_idx:
+                                video_info = v
+                                break
+
+                        if video_info is None:
+                            return None, "비디오 없음", 0
+
+                        max_idx = video_info['num_frames'] - 1
+
+                        if direction == "prev":
+                            new_idx = max(0, int(current_idx) - 1)
+                        elif direction == "next":
+                            new_idx = min(max_idx, int(current_idx) + 1)
+                        elif direction == "first":
+                            new_idx = 0
+                        elif direction == "last":
+                            new_idx = max_idx
+                        else:
+                            new_idx = int(current_idx)
+
+                        img, status = self.get_video_frame_for_preview(video_idx, new_idx, display_mode)
+                        return img, status, new_idx
+
+                    batch_vis_prev_btn.click(
+                        fn=lambda v, c, m: frame_nav(v, c, m, "prev"),
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info, batch_vis_slider]
+                    )
+
+                    batch_vis_next_btn.click(
+                        fn=lambda v, c, m: frame_nav(v, c, m, "next"),
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info, batch_vis_slider]
+                    )
+
+                    batch_vis_first_btn.click(
+                        fn=lambda v, c, m: frame_nav(v, c, m, "first"),
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info, batch_vis_slider]
+                    )
+
+                    batch_vis_last_btn.click(
+                        fn=lambda v, c, m: frame_nav(v, c, m, "last"),
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_preview_mode],
+                        outputs=[batch_image_display, batch_vis_info, batch_vis_slider]
+                    )
+
+                    # 프리뷰 영상 생성
+                    def generate_single_preview(video_idx, display_mode, fps, scale_percent):
+                        if video_idx is None:
+                            return None, "비디오를 선택하세요."
+                        scale = scale_percent / 100.0
+                        video_path, status = self.generate_preview_video(video_idx, display_mode, int(fps), scale)
+                        return video_path if video_path else None, status
+
+                    batch_gen_preview_btn.click(
+                        fn=generate_single_preview,
+                        inputs=[current_preview_video_idx, batch_preview_mode, batch_preview_fps, batch_preview_scale],
+                        outputs=[batch_preview_video, batch_status_text]
+                    )
+
+                    # 전체 비디오 프리뷰 생성
+                    def generate_all_previews(display_mode, fps, scale_percent, progress=gr.Progress()):
+                        video_list = self.get_batch_video_list()
+                        if not video_list:
+                            return None, "결과가 없습니다."
+
+                        scale = scale_percent / 100.0
+                        last_video_path = None
+                        results = []
+
+                        for i, video_info in enumerate(video_list):
+                            progress(i / len(video_list), desc=f"🎬 {video_info['video_name']} 생성 중...")
+                            video_path, status = self.generate_preview_video(
+                                video_info['video_idx'], display_mode, int(fps), scale
+                            )
+                            if video_path:
+                                last_video_path = video_path
+                                results.append(video_info['video_name'])
+
+                        progress(1.0, desc="✅ 완료!")
+
+                        status = f"""
+### 📦 전체 프리뷰 생성 완료 ✅
+
+- **생성된 비디오**: {len(results)}개
+- **저장 위치**: `{Path(self.default_output_dir) / 'previews'}`
+
+{chr(10).join([f'- {r}' for r in results])}
+"""
+                        return last_video_path, status
+
+                    batch_gen_all_preview_btn.click(
+                        fn=generate_all_previews,
+                        inputs=[batch_preview_mode, batch_preview_fps, batch_preview_scale],
+                        outputs=[batch_preview_video, batch_status_text]
+                    )
+
+                    # 시각화 이미지 저장
+                    batch_gen_vis_btn.click(
+                        fn=lambda: self.generate_batch_visualization(output_format="images"),
+                        outputs=[batch_output_path, batch_status_text]
+                    )
+
+                    # 전체 시각화 영상 생성
+                    batch_gen_video_btn.click(
+                        fn=lambda: self.generate_batch_visualization(output_format="video"),
+                        outputs=[batch_output_path, batch_status_text]
+                    )
+
+                    # Batch propagate 완료 후 자동으로 프리뷰 목록 업데이트
+                    def on_propagate_complete():
+                        return refresh_preview_video_list()
+
+                    batch_propagate_btn.click(
+                        fn=on_propagate_complete,
+                        outputs=[batch_preview_video_select]
+                    )
+
+                    batch_propagate_per_video_btn.click(
+                        fn=on_propagate_complete,
+                        outputs=[batch_preview_video_select]
                     )
 
                 # ===== Tab 3: Lite Annotator =====
@@ -3958,15 +5322,9 @@ dataset:
 
                         # Right column: Controls & Mask Display
                         with gr.Column(scale=1):
-                            # Model selection
-                            gr.Markdown("#### 🤖 Model Selection")
-                            lite_model_dropdown = gr.Dropdown(
-                                choices=["tiny", "small", "base_plus", "large"],
-                                value="large",
-                                label="SAM 2.1 Model",
-                                info="tiny: fastest, large: best quality"
-                            )
-                            lite_load_model_btn = gr.Button("Load Model", size="sm")
+                            # SAM2 모델 상태 안내
+                            gr.Markdown("#### 🤖 SAM2 Model")
+                            gr.Markdown("*상단의 공용 SAM2 모델을 사용합니다. 로드되지 않은 경우 상단에서 먼저 로드하세요.*")
 
                             # Point annotation
                             gr.Markdown("#### 🎨 Annotation")
@@ -4004,13 +5362,6 @@ dataset:
                         fn=self._lite_load_source,
                         inputs=[lite_input_path, lite_input_type, lite_pattern],
                         outputs=[lite_load_status, lite_frame_slider, lite_info]
-                    )
-
-                    # Load model
-                    lite_load_model_btn.click(
-                        fn=self._lite_load_model,
-                        inputs=[lite_model_dropdown],
-                        outputs=[lite_status]
                     )
 
                     # Frame slider change

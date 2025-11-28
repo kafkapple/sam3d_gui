@@ -112,6 +112,24 @@ class LiteAnnotator:
             return "cuda" if torch.cuda.is_available() else "cpu"
         return device
 
+    def set_predictor(self, predictor, model_name: str = "shared") -> str:
+        """
+        Set external SAM2ImagePredictor (for shared model usage)
+
+        Args:
+            predictor: SAM2ImagePredictor instance
+            model_name: Name to display (e.g., "shared", "large")
+
+        Returns:
+            Status message
+        """
+        if predictor is None:
+            return "❌ Predictor is None"
+
+        self.predictor = predictor
+        self.current_model = model_name
+        return f"✅ Using shared SAM2 predictor ({model_name})"
+
     def load_model(self, model_name: str = "large") -> str:
         """
         Load SAM 2.1 model
