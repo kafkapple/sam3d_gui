@@ -3147,11 +3147,15 @@ SAM2 체크포인트가 없습니다.
                 logger.info(f"✓ Reconstruction 완료: {type(reconstruction)}")
 
                 if reconstruction:
-                    # PLY 저장
+                    # PLY 저장 - 프레임 번호와 타임스탬프로 고유 파일명 생성
+                    from datetime import datetime
                     project_root = Path(__file__).parent.parent
                     output_dir = project_root / "outputs" / "3d_meshes"
                     output_dir.mkdir(parents=True, exist_ok=True)
-                    output_path = output_dir / "reconstruction.ply"
+
+                    timestamp = datetime.now().strftime("%H%M%S")
+                    filename = f"mesh_frame{mid_idx:04d}_{timestamp}.ply"
+                    output_path = output_dir / filename
 
                     logger.info(f"✓ Mesh 저장 중: {output_path}")
                     self.processor.export_mesh(reconstruction, str(output_path), format='ply')
