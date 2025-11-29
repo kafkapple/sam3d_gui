@@ -55,6 +55,13 @@ echo ""
 echo "💡 디버그 모드: ./run.sh --debug"
 echo ""
 
+# SAM 3D Objects 호환성 패치 적용
+if [[ -f "$PROJECT_ROOT/patches/apply_sam3d_patches.py" ]]; then
+    echo "🔧 SAM 3D Objects 패치 적용 중..."
+    conda run -n sam3d_gui python "$PROJECT_ROOT/patches/apply_sam3d_patches.py"
+    echo ""
+fi
+
 # 웹 앱 실행 (상대 경로)
 conda run -n sam3d_gui python "$PROJECT_ROOT/src/web_app.py"
 
