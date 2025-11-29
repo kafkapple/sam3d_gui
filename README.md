@@ -49,7 +49,8 @@ sam3d_gui/                          # Your main project (manage this only!)
 │   └── sam3d_processor.py         # Processing engine (450+ lines)
 │
 ├── external/                       # External dependencies
-│   └── sam-3d-objects/            # Git submodule (PyTorch 2.0 compatible fork)
+│   └── sam-3d-objects/            # Git submodule (kafkapple/sam-3d-objects fork)
+│                                   # PyTorch 2.0 compatible - 7 API fixes applied
 │       ├── checkpoints/hf/        # Model weights (download separately)
 │       └── notebook/              # SAM 3D inference code
 │
@@ -759,28 +760,33 @@ conda run -n sam3d_gui python -c "import torch; print(f'PyTorch: {torch.__versio
 
 ### Git Submodule
 
-This project uses **Git submodule** for `sam-3d-objects`:
+This project uses **Git submodule** for `sam-3d-objects` (PyTorch 2.0 compatible fork):
 
-**Update submodule**:
+**Fork repository**: https://github.com/kafkapple/sam-3d-objects
+
+**Daily update (recommended)**:
 ```bash
-git submodule update --remote
+git pull --recurse-submodules
 ```
 
-**Clone this project (with submodule)**:
+**First time setup**:
 ```bash
-git clone --recursive https://github.com/your/repo.git
+git clone https://github.com/kafkapple/sam3d_gui.git
+cd sam3d_gui
+git submodule update --init
 ```
 
-**If you already cloned**:
+**If submodule conflicts occur** (after manual edits):
 ```bash
-git submodule update --init --recursive
+rm -rf external/sam-3d-objects
+git submodule update --init
 ```
 
 **Advantages**:
 - ✅ Single project directory
 - ✅ Automatic version tracking
-- ✅ Easy updates
-- ✅ Team collaboration
+- ✅ PyTorch 2.0 compatibility fixes included
+- ✅ No runtime patching needed
 
 ### Conda Environment
 
@@ -1224,8 +1230,46 @@ cloudcompare outputs/reconstruction.ply   # CloudCompare
 
 ---
 
+## PyTorch 2.0 Compatibility
+
+This project uses a **forked sam-3d-objects** repository with PyTorch 2.0 compatibility fixes. The original Meta repository requires PyTorch 2.1+.
+
+### Fixed Issues (7 total)
+
+| Issue | Error Message | Solution |
+|-------|---------------|----------|
+| `torch._dynamo` | `AttributeError: module 'torch' has no attribute '_dynamo'` | `hasattr()` check |
+| `torch.nn.attention` | `ModuleNotFoundError` | Version detection + fallback |
+| Lightning isinstance | `TypeError: isinstance() arg 2 must be a type` | Stub classes + guard |
+| `tree_map` args | `takes 2 positional arguments but 3 were given` | Compatibility wrapper |
+| `torch.compiler` | `has no attribute 'compiler'` | `getattr()` check |
+| `index_add_` dtype | `self (Float) and source (Half) must have same type` | `.to(dtype)` conversion |
+| kaolin import | `RuntimeError: Error loading warp.so` | try/except fallback |
+
+### Detailed Documentation
+
+See **[docs/reports/251130_sam3d_pytorch2_compatibility.md](docs/reports/251130_sam3d_pytorch2_compatibility.md)** for:
+- Complete error messages and stack traces
+- Root cause analysis for each issue
+- Code-level solutions with before/after examples
+- Best practices for future PyTorch version compatibility
+
+### Upstream Sync (Optional)
+
+To merge upstream changes from Meta's repository:
+```bash
+cd external/sam-3d-objects
+git remote add upstream https://github.com/facebookresearch/sam-3d-objects.git
+git fetch upstream
+git merge upstream/main
+# Resolve conflicts if any, keeping compatibility fixes
+git push origin main
+```
+
+---
+
 **Status**: ✅ Complete and ready to use
-**Version**: 2.3 (Unified Setup + Memory Optimization)
-**Last Updated**: 2025-11-25
+**Version**: 2.4 (PyTorch 2.0 Compatibility)
+**Last Updated**: 2025-11-30
 
 **Happy 3D Segmentation!** 🎉
