@@ -1,5 +1,6 @@
 #!/bin/bash
 # SAM 3D GUI - 웹 인터페이스 실행 (상대 경로 기반)
+export LIDRA_SKIP_INIT=1
 
 # 프로젝트 루트 경로 설정
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

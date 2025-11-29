@@ -67,22 +67,9 @@ def _apply_sam3d_patches():
     sys.modules["kaolin.utils"] = kaolin_mock
     sys.modules["kaolin.utils.testing"] = kaolin_mock
 
-    # lightning mock (pytorch-lightning 의존성 단순화)
-    # isinstance() 체크를 위해 실제 클래스 타입 필요
-    class MockLightningModule:
-        """Mock class for pl.LightningModule isinstance() checks"""
-        pass
-
-    lightning_mock = MagicMock()
-    lightning_mock.LightningModule = MockLightningModule
-
-    lightning_pytorch_mock = MagicMock()
-    lightning_pytorch_mock.LightningModule = MockLightningModule
-
-    sys.modules["lightning"] = lightning_mock
-    sys.modules["lightning.pytorch"] = lightning_pytorch_mock
-    sys.modules["lightning.pytorch.utilities"] = MagicMock()
-    sys.modules["lightning.pytorch.utilities.consolidate_checkpoint"] = MagicMock()
+    # lightning mock 비활성화 - io.py에서 LIGHTNING_AVAILABLE=False로 처리
+    # lightning mock은 isinstance() 문제를 일으키므로 사용하지 않음
+    pass
 
 # 패치 적용
 _apply_sam3d_patches()
@@ -226,7 +213,13 @@ class SAM3DProcessor:
                 os.environ['SAM3D_USE_FP16'] = '1'
                 print(f"   Setting SAM3D_USE_FP16=1 for memory optimization")
 
-            self.inference_model = Inference(config_path, compile=False)
+            # Change to checkpoint directory for relative path resolution
+            original_cwd = os.getcwd()
+            os.chdir(os.path.dirname(config_path))
+            try:
+                self.inference_model = Inference(config_path, compile=False)
+            finally:
+                os.chdir(original_cwd)
 
             # Convert to FP16 if enabled (reduces memory by ~50%)
             if self.enable_fp16:
