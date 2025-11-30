@@ -3487,9 +3487,29 @@ meshlab {output_path}
 
         import cv2
         frame = cv2.imread(str(original_path))
+        if frame is None:
+            return None, f"원본 이미지 로드 실패: {original_path}"
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            return None, f"마스크 로드 실패: {mask_path}"
         mask = (mask > 127).astype(np.uint8) * 255  # 이진 마스크로 변환
+
+        # 마스크 유효성 검사
+        mask_pixels = np.sum(mask > 0)
+        total_pixels = mask.shape[0] * mask.shape[1]
+        mask_ratio = mask_pixels / total_pixels
+
+        logger.info(f"마스크 정보: {mask_pixels} 픽셀 ({mask_ratio*100:.2f}%), shape={mask.shape}")
+
+        if mask_pixels == 0:
+            return None, f"마스크가 비어 있습니다. 유효한 세그멘테이션이 필요합니다."
+
+        if mask_pixels < 100:
+            return None, f"마스크가 너무 작습니다 ({mask_pixels} 픽셀). 최소 100픽셀 이상 필요합니다."
+
+        if mask_ratio < 0.001:
+            return None, f"마스크 영역이 너무 작습니다 ({mask_ratio*100:.3f}%). 객체가 이미지에서 충분히 보이는지 확인하세요."
 
         logger.info(f"Batch 3D Mesh 생성: {unique_id} ({video_name}), frame {frame_idx}")
         logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
@@ -3574,9 +3594,27 @@ meshlab {output_path}
                 return None, "3D 재구성 실패"
 
         except Exception as e:
-            logger.error(f"Batch 3D Mesh 생성 실패: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"Batch 3D Mesh 생성 실패: {e}\n{error_details}")
             self.reload_sam2_models()
-            return None, f"3D Mesh 생성 실패: {str(e)}"
+
+            # 더 친절한 오류 메시지
+            error_msg = str(e)
+            if "numel() == 0" in error_msg or "reduction dim" in error_msg:
+                return None, f"""### 3D Mesh 생성 실패 ❌
+
+**원인**: 마스크에서 유효한 3D 구조를 생성할 수 없습니다.
+
+**가능한 해결 방법**:
+1. 다른 프레임을 선택해 보세요 (객체가 더 명확한 프레임)
+2. 마스크 품질 확인 - 객체가 완전히 세그멘테이션되었는지 확인
+3. Seed 값을 변경해 보세요
+
+**디버그 정보**: 마스크 {mask_pixels} 픽셀 ({mask_ratio*100:.2f}%)
+"""
+            else:
+                return None, f"3D Mesh 생성 실패: {error_msg}\n\n자세한 로그는 터미널을 확인하세요."
 
     def batch_generate_3d_mesh_selected(
         self,
