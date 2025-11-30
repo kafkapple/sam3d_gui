@@ -237,6 +237,49 @@ python3 src/gui_app.py
 3. Wait ~30-60 seconds
 4. Click **"Export PLY"** to save mesh
 
+### 3D Mesh Generation Options
+
+#### Parameter Reference
+
+| Parameter | Default | Range | Description | Dependency |
+|-----------|---------|-------|-------------|------------|
+| **Seed** | 42 | any int | 동일 seed = 동일 결과 (재현성) | None |
+| **Stage1 Steps** | 25 | 5-50 | Sparse structure 품질 (높을수록 좋지만 느림) | None |
+| **Stage2 Steps** | 25 | 5-50 | Latent feature 품질 (높을수록 좋지만 느림) | None |
+| **Mesh 후처리** | OFF | ON/OFF | 단순화, 홀 채우기 | ⚠️ nvdiffrast 필요 |
+| **Simplify Ratio** | 0.95 | 0.5-0.99 | Face 유지 비율 (0.95 = 5% 제거) | Mesh 후처리 ON |
+| **Texture Baking** | OFF | ON/OFF | 텍스처 맵 생성 | ⚠️ nvdiffrast 필요 |
+| **Texture Size** | 1024 | 512/1024/2048 | 텍스처 해상도 | Texture Baking ON |
+| **Vertex Color** | ON | ON/OFF | 버텍스에 색상 저장 | None |
+
+#### nvdiffrast 설치 (선택사항)
+
+**Mesh 후처리** 및 **Texture Baking** 기능을 사용하려면 nvdiffrast가 필요합니다:
+
+```bash
+# Conda 환경 활성화
+conda activate sam3d_gui
+
+# nvdiffrast 설치 (CUDA toolkit 필요)
+pip install git+https://github.com/NVlabs/nvdiffrast.git
+
+# 설치 확인
+python -c "import nvdiffrast; print('nvdiffrast OK')"
+```
+
+**nvdiffrast 없이 사용 가능한 설정:**
+- ✅ Seed, Stage1/2 Steps, Vertex Color
+- ❌ Mesh 후처리, Texture Baking → **OFF로 유지**
+
+#### 권장 설정
+
+| 용도 | Stage1 | Stage2 | 후처리 | Texture | 예상 시간 |
+|------|--------|--------|--------|---------|----------|
+| **빠른 미리보기** | 15 | 15 | OFF | OFF | ~20초 |
+| **기본 품질** | 25 | 25 | OFF | OFF | ~40초 |
+| **고품질** | 50 | 50 | OFF | OFF | ~80초 |
+| **최고 품질** (nvdiffrast 필요) | 50 | 50 | ON | ON | ~120초 |
+
 ### Processing Parameters Explained
 
 #### Start Time & Duration
