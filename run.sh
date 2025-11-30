@@ -7,6 +7,39 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR"
 cd "$PROJECT_ROOT"
 
+# Ctrl+C 시그널 처리 - 자식 프로세스도 함께 종료
+cleanup() {
+    echo ""
+    echo "종료 중... 프로세스 정리"
+    # 현재 스크립트의 자식 프로세스 그룹 종료
+    pkill -P $$ 2>/dev/null
+    # web_app.py 프로세스 직접 종료
+    pkill -f "python.*web_app.py" 2>/dev/null
+    exit 0
+}
+trap cleanup SIGINT SIGTERM
+
+# 기존 프로세스 확인 및 정리
+check_existing_process() {
+    local existing_pid=$(pgrep -f "python.*web_app.py" 2>/dev/null)
+    if [[ -n "$existing_pid" ]]; then
+        echo "⚠️  기존 sam3d_gui 프로세스 발견 (PID: $existing_pid)"
+        read -p "기존 프로세스를 종료하시겠습니까? (y/N): " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            kill $existing_pid 2>/dev/null
+            sleep 1
+            # 강제 종료 필요시
+            if ps -p $existing_pid > /dev/null 2>&1; then
+                kill -9 $existing_pid 2>/dev/null
+            fi
+            echo "✅ 기존 프로세스 종료됨"
+        else
+            echo "기존 프로세스가 실행 중입니다. 새 인스턴스를 시작하지 않습니다."
+            exit 1
+        fi
+    fi
+}
+
 # 디버그 모드 확인
 DEBUG_MODE=0
 if [[ "$1" == "--debug" ]] || [[ "$1" == "-d" ]]; then
@@ -33,6 +66,9 @@ if ! conda env list | grep -q "^sam3d_gui "; then
     echo ""
     exit 1
 fi
+
+# 기존 프로세스 확인
+check_existing_process
 
 # 환경 변수 설정 (SAM3D 초기화 스킵)
 export LIDRA_SKIP_INIT=1
