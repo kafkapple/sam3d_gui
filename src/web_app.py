@@ -3444,29 +3444,54 @@ meshlab {output_path}
         if not hasattr(self, 'batch_results') or not self.batch_results:
             return None, "먼저 Batch Propagate를 실행하세요."
 
-        if video_idx < 0 or video_idx >= len(self.batch_results):
-            return None, f"잘못된 비디오 인덱스: {video_idx}"
+        # batch_results는 {'videos': [...], 'temp_dir': ..., 'total_frames': ...} 구조
+        videos = self.batch_results.get('videos', [])
+        if not videos:
+            return None, "비디오 결과가 없습니다."
 
-        video_result = self.batch_results[video_idx]
+        # video_idx로 해당 비디오 찾기
+        video_result = None
+        for v in videos:
+            if v.get('video_idx') == video_idx:
+                video_result = v
+                break
+
+        if video_result is None:
+            return None, f"비디오 인덱스 {video_idx}를 찾을 수 없습니다. (총 {len(videos)}개 비디오)"
+
         video_name = video_result.get('video_name', f'video_{video_idx:03d}')
         video_path = video_result.get('video_path', '')
         unique_id = self._generate_unique_video_id(video_path) if video_path else video_name
-        masks = video_result.get('masks', [])
-        frames = video_result.get('frames', [])
+        result_dir = video_result.get('result_dir', '')
 
-        if not masks or not frames:
-            return None, f"비디오 {video_name}에 마스크/프레임 없음"
+        # 프레임 디렉토리에서 마스크와 이미지 로드
+        if not result_dir or not Path(result_dir).exists():
+            return None, f"결과 디렉토리를 찾을 수 없습니다: {result_dir}"
 
-        if frame_idx < 0 or frame_idx >= len(masks):
-            return None, f"잘못된 프레임 인덱스: {frame_idx}"
+        frame_dirs = sorted([d for d in Path(result_dir).iterdir() if d.is_dir() and d.name.startswith('frame_')])
+        if not frame_dirs:
+            return None, f"비디오 {video_name}에 프레임이 없습니다."
 
-        frame = frames[frame_idx]
-        mask = masks[frame_idx]
+        if frame_idx < 0 or frame_idx >= len(frame_dirs):
+            return None, f"잘못된 프레임 인덱스: {frame_idx} (총 {len(frame_dirs)}개 프레임)"
 
-        if mask is None:
-            return None, f"프레임 {frame_idx}에 마스크가 없습니다."
+        # 프레임 디렉토리에서 이미지와 마스크 로드
+        frame_dir = frame_dirs[frame_idx]
+        original_path = frame_dir / "original.png"
+        mask_path = frame_dir / "mask.png"
 
-        logger.info(f"Batch 3D Mesh 생성: {video_name}, frame {frame_idx}")
+        if not original_path.exists():
+            return None, f"원본 이미지를 찾을 수 없습니다: {original_path}"
+        if not mask_path.exists():
+            return None, f"마스크를 찾을 수 없습니다: {mask_path}"
+
+        import cv2
+        frame = cv2.imread(str(original_path))
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        mask = (mask > 127).astype(np.uint8) * 255  # 이진 마스크로 변환
+
+        logger.info(f"Batch 3D Mesh 생성: {unique_id} ({video_name}), frame {frame_idx}")
         logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
         progress(0.3, desc="SAM 3D 초기화 중...")
 
@@ -3500,9 +3525,10 @@ meshlab {output_path}
                     "source": {
                         "session_path": self.current_session_path,
                         "video_name": video_name,
+                        "unique_id": unique_id,
                         "video_idx": video_idx,
                         "frame_idx": frame_idx,
-                        "total_frames": len(frames)
+                        "total_frames": len(frame_dirs)
                     },
                     "parameters": mesh_settings,
                     "output": {
@@ -3614,36 +3640,60 @@ meshlab {output_path}
             frame_idx = frame_info['frame_idx']
             video_name = frame_info.get('video_name', f'video_{video_idx:03d}')
 
-            progress((i + 0.2) / total, desc=f"3D Mesh 생성 중: {video_name} frame {frame_idx}")
+            # batch_results는 {'videos': [...], 'temp_dir': ..., 'total_frames': ...} 구조
+            videos = self.batch_results.get('videos', [])
 
-            # 비디오/프레임 데이터 가져오기
-            if video_idx < 0 or video_idx >= len(self.batch_results):
-                failed_meshes.append(f"{video_name} frame {frame_idx}: 잘못된 비디오 인덱스")
+            # video_idx로 해당 비디오 찾기
+            video_result = None
+            for v in videos:
+                if v.get('video_idx') == video_idx:
+                    video_result = v
+                    break
+
+            if video_result is None:
+                failed_meshes.append(f"{video_name} frame {frame_idx}: 비디오를 찾을 수 없음")
                 continue
 
-            video_result = self.batch_results[video_idx]
             video_path = video_result.get('video_path', '')
             unique_id = self._generate_unique_video_id(video_path) if video_path else video_name
-            masks = video_result.get('masks', [])
-            frames = video_result.get('frames', [])
+            result_dir = video_result.get('result_dir', '')
 
-            if not masks or not frames:
-                failed_meshes.append(f"{video_name} frame {frame_idx}: 마스크/프레임 없음")
+            progress((i + 0.2) / total, desc=f"3D Mesh 생성 중: {unique_id} frame {frame_idx}")
+
+            # 프레임 디렉토리에서 마스크와 이미지 로드
+            if not result_dir or not Path(result_dir).exists():
+                failed_meshes.append(f"{unique_id} frame {frame_idx}: 결과 디렉토리 없음")
                 continue
 
-            if frame_idx < 0 or frame_idx >= len(masks):
-                failed_meshes.append(f"{video_name} frame {frame_idx}: 잘못된 프레임 인덱스")
+            frame_dirs = sorted([d for d in Path(result_dir).iterdir() if d.is_dir() and d.name.startswith('frame_')])
+            if not frame_dirs:
+                failed_meshes.append(f"{unique_id} frame {frame_idx}: 프레임 디렉토리 없음")
                 continue
 
-            frame = frames[frame_idx]
-            mask = masks[frame_idx]
-
-            if mask is None:
-                failed_meshes.append(f"{video_name} frame {frame_idx}: 마스크 없음")
+            if frame_idx < 0 or frame_idx >= len(frame_dirs):
+                failed_meshes.append(f"{unique_id} frame {frame_idx}: 잘못된 프레임 인덱스 (총 {len(frame_dirs)}개)")
                 continue
+
+            # 프레임 디렉토리에서 이미지와 마스크 로드
+            frame_dir = frame_dirs[frame_idx]
+            original_path = frame_dir / "original.png"
+            mask_path = frame_dir / "mask.png"
+
+            if not original_path.exists():
+                failed_meshes.append(f"{unique_id} frame {frame_idx}: 원본 이미지 없음")
+                continue
+            if not mask_path.exists():
+                failed_meshes.append(f"{unique_id} frame {frame_idx}: 마스크 파일 없음")
+                continue
+
+            import cv2
+            frame = cv2.imread(str(original_path))
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            mask = (mask > 127).astype(np.uint8) * 255  # 이진 마스크로 변환
 
             try:
-                progress((i + 0.5) / total, desc=f"3D 재구성 중: {video_name} frame {frame_idx}")
+                progress((i + 0.5) / total, desc=f"3D 재구성 중: {unique_id} frame {frame_idx}")
 
                 reconstruction = self.processor.reconstruct_3d(
                     frame, mask,
@@ -3669,7 +3719,7 @@ meshlab {output_path}
                             "video_name": video_name,
                             "video_idx": video_idx,
                             "frame_idx": frame_idx,
-                            "total_frames": len(frames)
+                            "total_frames": len(frame_dirs)
                         },
                         "parameters": mesh_settings,
                         "output": {
@@ -3773,36 +3823,54 @@ meshlab {output_path}
         if not hasattr(self, 'batch_results') or not self.batch_results:
             return None, "먼저 Batch Propagate를 실행하세요."
 
+        # batch_results는 {'videos': [...], 'temp_dir': ..., 'total_frames': ...} 구조
+        videos = self.batch_results.get('videos', [])
+        if not videos:
+            return None, "비디오 결과가 없습니다."
+
         # 세션 폴더 내부에 저장 (있으면), 없으면 기본 경로
         output_dir = self._get_session_mesh_dir()
 
         generated_meshes = []
-        total = len(self.batch_results)
+        total = len(videos)
 
         logger.info(f"전체 3D Mesh 생성 시작: {total}개 비디오")
         logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
 
-        for i, video_result in enumerate(self.batch_results):
+        for i, video_result in enumerate(videos):
+            video_idx = video_result.get('video_idx', i)
             video_name = video_result.get('video_name', f'video_{i:03d}')
             video_path = video_result.get('video_path', '')
             unique_id = self._generate_unique_video_id(video_path) if video_path else video_name
-            masks = video_result.get('masks', [])
-            frames = video_result.get('frames', [])
+            result_dir = video_result.get('result_dir', '')
 
-            if not masks or not frames:
-                logger.warning(f"Skip {video_name}: no masks/frames")
+            # 프레임 디렉토리 확인
+            if not result_dir or not Path(result_dir).exists():
+                logger.warning(f"Skip {unique_id}: result_dir not found")
+                continue
+
+            frame_dirs = sorted([d for d in Path(result_dir).iterdir() if d.is_dir() and d.name.startswith('frame_')])
+            if not frame_dirs:
+                logger.warning(f"Skip {unique_id}: no frame directories")
                 continue
 
             # 중간 프레임 선택
-            mid_idx = len(frames) // 2
-            frame = frames[mid_idx]
-            mask = masks[mid_idx]
+            mid_idx = len(frame_dirs) // 2
+            frame_dir = frame_dirs[mid_idx]
+            original_path = frame_dir / "original.png"
+            mask_path = frame_dir / "mask.png"
 
-            if mask is None:
-                logger.warning(f"Skip {video_name}: no mask at frame {mid_idx}")
+            if not original_path.exists() or not mask_path.exists():
+                logger.warning(f"Skip {unique_id}: no original/mask at frame {mid_idx}")
                 continue
 
-            progress((i + 0.5) / total, desc=f"3D Mesh 생성 중: {video_name}")
+            import cv2
+            frame = cv2.imread(str(original_path))
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            mask = (mask > 127).astype(np.uint8) * 255
+
+            progress((i + 0.5) / total, desc=f"3D Mesh 생성 중: {unique_id} ({i+1}/{total})")
 
             # 첫 번째 비디오 전에 SAM2 언로드
             if i == 0:
@@ -3831,9 +3899,9 @@ meshlab {output_path}
                             "session_path": self.current_session_path,
                             "unique_id": unique_id,
                             "video_name": video_name,
-                            "video_idx": i,
+                            "video_idx": video_idx,
                             "frame_idx": mid_idx,
-                            "total_frames": len(frames)
+                            "total_frames": len(frame_dirs)
                         },
                         "parameters": mesh_settings,
                         "output": {
@@ -3848,7 +3916,7 @@ meshlab {output_path}
                     mesh_info = {
                         "unique_id": unique_id,
                         "video_name": video_name,
-                        "video_idx": i,
+                        "video_idx": video_idx,
                         "frame_idx": mid_idx,
                         "filename": filename,
                         "settings_file": settings_filename,
@@ -3860,7 +3928,7 @@ meshlab {output_path}
                     generated_meshes.append({
                         'unique_id': unique_id,
                         'video': video_name,
-                        'video_idx': i,
+                        'video_idx': video_idx,
                         'frame': mid_idx,
                         'path': str(output_path)
                     })
