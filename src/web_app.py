@@ -659,6 +659,124 @@ class SAMInteractiveWebApp:
         stride = max(1, len(self.frames) // target_frames)
         return stride
 
+    def _extract_subject_id(self, video_path: str) -> Optional[str]:
+        """
+        비디오 경로에서 subject ID (예: mouse_1, mouse_2) 추출
+
+        Args:
+            video_path: 비디오 파일 경로
+
+        Returns:
+            subject ID 문자열 또는 None
+        """
+        import re
+        # mouse_1, mouse_2 등의 패턴 찾기
+        match = re.search(r'mouse_(\d+)', video_path, re.IGNORECASE)
+        if match:
+            return f"mouse_{match.group(1)}"
+
+        # subject_1, subject_2 패턴도 지원
+        match = re.search(r'subject_(\d+)', video_path, re.IGNORECASE)
+        if match:
+            return f"subject_{match.group(1)}"
+
+        return None
+
+    def _extract_camera_id(self, video_path: str) -> Optional[str]:
+        """
+        비디오 경로에서 camera ID (예: Camera1, cam2) 추출
+
+        Args:
+            video_path: 비디오 파일 경로
+
+        Returns:
+            camera ID 문자열 또는 None
+        """
+        import re
+        # Camera1, Camera2 패턴
+        match = re.search(r'Camera(\d+)', video_path, re.IGNORECASE)
+        if match:
+            return f"cam{match.group(1)}"
+
+        # cam1, cam2 패턴
+        match = re.search(r'cam(\d+)', video_path, re.IGNORECASE)
+        if match:
+            return f"cam{match.group(1)}"
+
+        # view1, view2 패턴
+        match = re.search(r'view(\d+)', video_path, re.IGNORECASE)
+        if match:
+            return f"view{match.group(1)}"
+
+        return None
+
+    def _generate_unique_video_id(self, video_path: str) -> str:
+        """
+        비디오 경로에서 고유한 ID 생성 (mouse + camera + 파일명)
+
+        예: /media/.../mouse_1/Camera1/0.mp4 -> "m1_cam1_0"
+
+        Args:
+            video_path: 비디오 파일 경로
+
+        Returns:
+            고유한 비디오 ID 문자열
+        """
+        import re
+        parts = []
+
+        # Subject ID 추출
+        subject_match = re.search(r'mouse_(\d+)', video_path, re.IGNORECASE)
+        if subject_match:
+            parts.append(f"m{subject_match.group(1)}")
+        else:
+            subject_match = re.search(r'subject_(\d+)', video_path, re.IGNORECASE)
+            if subject_match:
+                parts.append(f"s{subject_match.group(1)}")
+
+        # Camera ID 추출
+        camera_match = re.search(r'Camera(\d+)', video_path, re.IGNORECASE)
+        if camera_match:
+            parts.append(f"cam{camera_match.group(1)}")
+        else:
+            camera_match = re.search(r'cam(\d+)', video_path, re.IGNORECASE)
+            if camera_match:
+                parts.append(f"cam{camera_match.group(1)}")
+
+        # 파일명 (확장자 제외)
+        filename = Path(video_path).stem
+        parts.append(filename)
+
+        if parts:
+            return "_".join(parts)
+        else:
+            # 추출 실패 시 전체 경로 기반 해시
+            return Path(video_path).stem
+
+    def _format_video_label_with_subject(self, video_path: str, video_name: str, base_path: Path = None) -> str:
+        """
+        비디오 레이블 생성 (unique_id 형식: m1_cam1_frame)
+
+        Args:
+            video_path: 전체 비디오 경로
+            video_name: 비디오 파일명
+            base_path: 기준 경로 (상대 경로 계산용)
+
+        Returns:
+            포맷된 레이블 문자열 (예: m1_cam1_0)
+        """
+        unique_id = self._generate_unique_video_id(video_path)
+
+        # unique_id가 video_name과 다르면 unique_id 사용, 같으면 상대경로 사용
+        if unique_id != video_name:
+            return unique_id
+
+        if base_path:
+            rel_path = str(Path(video_path).relative_to(base_path))
+            return rel_path
+
+        return video_name
+
     def scan_batch_videos(self, data_dir: str, pattern: str = "*.mp4") -> Tuple[List[str], str, gr.CheckboxGroup]:
         """
         폴더 내 모든 비디오 스캔 및 메타데이터 수집 (recursive)
@@ -735,16 +853,16 @@ class SAMInteractiveWebApp:
             self.batch_videos = video_paths
             self.batch_video_info = video_info
 
-            # CheckboxGroup 업데이트 - 전체 상대 경로로 표시 (고유하게)
-            video_relative_paths = [str(Path(info['path']).relative_to(data_path)) for info in video_info]
-
-            # 전체 계층적 경로를 레이블로 사용
-            video_labels = video_relative_paths  # 전체 경로 사용
+            # CheckboxGroup 업데이트 - subject ID 포함하여 표시
+            video_labels = [
+                self._format_video_label_with_subject(info['path'], info['name'], data_path)
+                for info in video_info
+            ]
 
             updated_checkbox = gr.CheckboxGroup(
                 choices=video_labels,
                 value=video_labels,  # 기본적으로 모두 선택
-                label="🎬 처리할 비디오 선택 (계층적 경로)",
+                label="🎬 처리할 비디오 선택 (Subject ID + 경로)",
                 info="선택된 비디오만 처리됩니다"
             )
 
@@ -1663,7 +1781,7 @@ class SAMInteractiveWebApp:
         Batch 결과의 비디오 목록 반환
 
         Returns:
-            비디오 정보 리스트 [{video_idx, video_name, result_dir, num_frames}, ...]
+            비디오 정보 리스트 [{video_idx, video_name, video_path, result_dir, num_frames, subject_id}, ...]
         """
         if not hasattr(self, 'batch_results') or not self.batch_results:
             return []
@@ -1673,11 +1791,17 @@ class SAMInteractiveWebApp:
             video_dir = Path(video_result['result_dir'])
             if video_dir.exists():
                 num_frames = len(list(video_dir.glob("frame_*")))
+                video_path = video_result.get('video_path', '')
+                subject_id = self._extract_subject_id(video_path)
+                unique_id = self._generate_unique_video_id(video_path)
                 video_list.append({
                     'video_idx': video_result['video_idx'],
                     'video_name': video_result['video_name'],
+                    'video_path': video_path,
                     'result_dir': str(video_dir),
-                    'num_frames': num_frames
+                    'num_frames': num_frames,
+                    'subject_id': subject_id,
+                    'unique_id': unique_id
                 })
         return video_list
 
@@ -3311,6 +3435,8 @@ meshlab {output_path}
 
         video_result = self.batch_results[video_idx]
         video_name = video_result.get('video_name', f'video_{video_idx:03d}')
+        video_path = video_result.get('video_path', '')
+        unique_id = self._generate_unique_video_id(video_path) if video_path else video_name
         masks = video_result.get('masks', [])
         frames = video_result.get('frames', [])
 
@@ -3342,27 +3468,25 @@ meshlab {output_path}
             )
 
             if reconstruction:
-                # 세션 기반 폴더 구조
-                project_root = Path(__file__).parent.parent
-                session_name = getattr(self, 'batch_session_name', 'batch_session')
-                output_dir = project_root / "outputs" / "3d_meshes" / session_name
-                output_dir.mkdir(parents=True, exist_ok=True)
+                # 세션 폴더 내부에 저장 (있으면), 없으면 기본 경로
+                output_dir = self._get_session_mesh_dir()
 
                 timestamp = datetime.now().strftime("%H%M%S")
-                filename = f"{video_name}_frame{frame_idx:04d}_{timestamp}.ply"
+                filename = f"{unique_id}_frame{frame_idx:04d}_{timestamp}.ply"
                 output_path = output_dir / filename
 
                 self.processor.export_mesh(reconstruction, str(output_path), format='ply')
                 logger.info(f"Mesh 저장 완료: {output_path}")
 
                 # 설정 파일 저장
-                settings_filename = f"{video_name}_frame{frame_idx:04d}_{timestamp}_settings.json"
+                settings_filename = f"{unique_id}_frame{frame_idx:04d}_{timestamp}_settings.json"
                 settings_path = output_dir / settings_filename
                 settings_data = {
                     "timestamp": datetime.now().isoformat(),
                     "source": {
-                        "session_name": session_name,
+                        "session_path": self.current_session_path,
                         "video_name": video_name,
+                        "video_idx": video_idx,
                         "frame_idx": frame_idx,
                         "total_frames": len(frames)
                     },
@@ -3375,6 +3499,19 @@ meshlab {output_path}
                 with open(settings_path, 'w', encoding='utf-8') as f:
                     json.dump(settings_data, f, indent=2, ensure_ascii=False)
 
+                # 세션 메타데이터에 mesh 정보 추가
+                mesh_info = {
+                    "unique_id": unique_id,
+                    "video_name": video_name,
+                    "video_idx": video_idx,
+                    "frame_idx": frame_idx,
+                    "filename": filename,
+                    "settings_file": settings_filename,
+                    "timestamp": datetime.now().isoformat(),
+                    "parameters": mesh_settings
+                }
+                self._update_session_mesh_metadata(mesh_info)
+
                 progress(1.0, desc="완료!")
                 self.reload_sam2_models()
 
@@ -3384,6 +3521,7 @@ meshlab {output_path}
 - **프레임**: {frame_idx + 1}
 - **저장 위치**: `{output_path}`
 - **설정 파일**: `{settings_path}`
+- **세션 메타데이터**: 자동 업데이트됨
 
 **파라미터:**
 - Seed: {mesh_settings['seed']}
@@ -3399,6 +3537,194 @@ meshlab {output_path}
             logger.error(f"Batch 3D Mesh 생성 실패: {e}")
             self.reload_sam2_models()
             return None, f"3D Mesh 생성 실패: {str(e)}"
+
+    def batch_generate_3d_mesh_selected(
+        self,
+        selected_frames: List[dict],
+        seed: int = 42,
+        stage1_steps: int = 25,
+        stage2_steps: int = 25,
+        with_postprocess: bool = False,
+        simplify_ratio: float = 0.95,
+        with_texture_baking: bool = False,
+        texture_size: int = 1024,
+        use_vertex_color: bool = True,
+        progress=gr.Progress()
+    ) -> Tuple[str, str]:
+        """
+        선택된 프레임들의 3D Mesh 일괄 생성
+
+        Args:
+            selected_frames: 선택된 프레임 정보 리스트 [{video_idx, video_name, frame_idx}, ...]
+            기타: mesh 생성 파라미터
+
+        Returns:
+            (출력 디렉토리 경로, 상태 메시지)
+        """
+        from datetime import datetime
+        import json
+
+        if not selected_frames:
+            return None, "선택된 프레임이 없습니다. 먼저 프레임을 추가하세요."
+
+        if not hasattr(self, 'batch_results') or not self.batch_results:
+            return None, "Batch 결과가 없습니다. 먼저 Batch Propagate를 실행하세요."
+
+        # 메시 파라미터 설정
+        mesh_settings = {
+            "seed": int(seed),
+            "stage1_inference_steps": int(stage1_steps),
+            "stage2_inference_steps": int(stage2_steps),
+            "with_mesh_postprocess": with_postprocess,
+            "simplify_ratio": float(simplify_ratio),
+            "with_texture_baking": with_texture_baking,
+            "texture_size": int(texture_size),
+            "use_vertex_color": use_vertex_color
+        }
+
+        # 세션 폴더 내부에 저장
+        output_dir = self._get_session_mesh_dir()
+
+        generated_meshes = []
+        failed_meshes = []
+        total = len(selected_frames)
+
+        logger.info(f"선택된 프레임 3D Mesh 생성 시작: {total}개 프레임")
+        logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
+
+        # 첫 번째 프레임 전에 SAM2 언로드
+        self.unload_sam2_models()
+
+        for i, frame_info in enumerate(selected_frames):
+            video_idx = frame_info['video_idx']
+            frame_idx = frame_info['frame_idx']
+            video_name = frame_info.get('video_name', f'video_{video_idx:03d}')
+
+            progress((i + 0.2) / total, desc=f"3D Mesh 생성 중: {video_name} frame {frame_idx}")
+
+            # 비디오/프레임 데이터 가져오기
+            if video_idx < 0 or video_idx >= len(self.batch_results):
+                failed_meshes.append(f"{video_name} frame {frame_idx}: 잘못된 비디오 인덱스")
+                continue
+
+            video_result = self.batch_results[video_idx]
+            video_path = video_result.get('video_path', '')
+            unique_id = self._generate_unique_video_id(video_path) if video_path else video_name
+            masks = video_result.get('masks', [])
+            frames = video_result.get('frames', [])
+
+            if not masks or not frames:
+                failed_meshes.append(f"{video_name} frame {frame_idx}: 마스크/프레임 없음")
+                continue
+
+            if frame_idx < 0 or frame_idx >= len(masks):
+                failed_meshes.append(f"{video_name} frame {frame_idx}: 잘못된 프레임 인덱스")
+                continue
+
+            frame = frames[frame_idx]
+            mask = masks[frame_idx]
+
+            if mask is None:
+                failed_meshes.append(f"{video_name} frame {frame_idx}: 마스크 없음")
+                continue
+
+            try:
+                progress((i + 0.5) / total, desc=f"3D 재구성 중: {video_name} frame {frame_idx}")
+
+                reconstruction = self.processor.reconstruct_3d(
+                    frame, mask,
+                    seed=mesh_settings['seed'],
+                    mesh_settings=mesh_settings
+                )
+
+                if reconstruction:
+                    timestamp = datetime.now().strftime("%H%M%S")
+                    filename = f"{unique_id}_frame{frame_idx:04d}_{timestamp}.ply"
+                    output_path = output_dir / filename
+
+                    self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+
+                    # 설정 파일 저장
+                    settings_filename = f"{unique_id}_frame{frame_idx:04d}_{timestamp}_settings.json"
+                    settings_path = output_dir / settings_filename
+                    settings_data = {
+                        "timestamp": datetime.now().isoformat(),
+                        "source": {
+                            "session_path": self.current_session_path,
+                            "unique_id": unique_id,
+                            "video_name": video_name,
+                            "video_idx": video_idx,
+                            "frame_idx": frame_idx,
+                            "total_frames": len(frames)
+                        },
+                        "parameters": mesh_settings,
+                        "output": {
+                            "filename": filename,
+                            "format": "ply"
+                        }
+                    }
+                    with open(settings_path, 'w', encoding='utf-8') as f:
+                        json.dump(settings_data, f, indent=2, ensure_ascii=False)
+
+                    # 세션 메타데이터에 mesh 정보 추가
+                    mesh_info = {
+                        "unique_id": unique_id,
+                        "video_name": video_name,
+                        "video_idx": video_idx,
+                        "frame_idx": frame_idx,
+                        "filename": filename,
+                        "settings_file": settings_filename,
+                        "timestamp": datetime.now().isoformat(),
+                        "parameters": mesh_settings
+                    }
+                    self._update_session_mesh_metadata(mesh_info)
+
+                    generated_meshes.append({
+                        'unique_id': unique_id,
+                        'video': video_name,
+                        'video_idx': video_idx,
+                        'frame': frame_idx,
+                        'path': str(output_path)
+                    })
+                    logger.info(f"Generated: {filename}")
+                else:
+                    failed_meshes.append(f"{video_name} frame {frame_idx}: 재구성 실패")
+
+            except Exception as e:
+                logger.error(f"Failed {video_name} frame {frame_idx}: {e}")
+                failed_meshes.append(f"{video_name} frame {frame_idx}: {str(e)}")
+                continue
+
+        # SAM2 다시 로드
+        self.reload_sam2_models()
+
+        progress(1.0, desc="완료!")
+
+        if generated_meshes:
+            mesh_list = "\n".join([f"- {m['video']} (frame {m['frame']})" for m in generated_meshes])
+            failed_list = "\n".join([f"- {f}" for f in failed_meshes]) if failed_meshes else ""
+
+            status = f"""### 선택 프레임 3D Mesh 생성 완료 ✅
+
+**생성 성공**: {len(generated_meshes)}/{total}개
+**저장 위치**: `{output_dir}`
+
+**파라미터:**
+- Seed: {mesh_settings['seed']}
+- Steps: {mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}
+- 후처리: {'✓' if mesh_settings['with_mesh_postprocess'] else '✗'}
+
+**생성된 메시:**
+{mesh_list}
+"""
+            if failed_meshes:
+                status += f"""
+**실패한 프레임:**
+{failed_list}
+"""
+            return str(output_dir), status
+        else:
+            return None, f"3D Mesh 생성 실패 (모든 프레임)\n\n실패 목록:\n" + "\n".join([f"- {f}" for f in failed_meshes])
 
     def batch_generate_3d_mesh_all(
         self,
@@ -3433,10 +3759,8 @@ meshlab {output_path}
         if not hasattr(self, 'batch_results') or not self.batch_results:
             return None, "먼저 Batch Propagate를 실행하세요."
 
-        project_root = Path(__file__).parent.parent
-        session_name = getattr(self, 'batch_session_name', 'batch_session')
-        output_dir = project_root / "outputs" / "3d_meshes" / session_name
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # 세션 폴더 내부에 저장 (있으면), 없으면 기본 경로
+        output_dir = self._get_session_mesh_dir()
 
         generated_meshes = []
         total = len(self.batch_results)
@@ -3446,6 +3770,8 @@ meshlab {output_path}
 
         for i, video_result in enumerate(self.batch_results):
             video_name = video_result.get('video_name', f'video_{i:03d}')
+            video_path = video_result.get('video_path', '')
+            unique_id = self._generate_unique_video_id(video_path) if video_path else video_name
             masks = video_result.get('masks', [])
             frames = video_result.get('frames', [])
 
@@ -3477,19 +3803,21 @@ meshlab {output_path}
 
                 if reconstruction:
                     timestamp = datetime.now().strftime("%H%M%S")
-                    filename = f"{video_name}_frame{mid_idx:04d}_{timestamp}.ply"
+                    filename = f"{unique_id}_frame{mid_idx:04d}_{timestamp}.ply"
                     output_path = output_dir / filename
 
                     self.processor.export_mesh(reconstruction, str(output_path), format='ply')
 
                     # 설정 파일 저장
-                    settings_filename = f"{video_name}_frame{mid_idx:04d}_{timestamp}_settings.json"
+                    settings_filename = f"{unique_id}_frame{mid_idx:04d}_{timestamp}_settings.json"
                     settings_path = output_dir / settings_filename
                     settings_data = {
                         "timestamp": datetime.now().isoformat(),
                         "source": {
-                            "session_name": session_name,
+                            "session_path": self.current_session_path,
+                            "unique_id": unique_id,
                             "video_name": video_name,
+                            "video_idx": i,
                             "frame_idx": mid_idx,
                             "total_frames": len(frames)
                         },
@@ -3502,8 +3830,23 @@ meshlab {output_path}
                     with open(settings_path, 'w', encoding='utf-8') as f:
                         json.dump(settings_data, f, indent=2, ensure_ascii=False)
 
+                    # 세션 메타데이터에 mesh 정보 추가
+                    mesh_info = {
+                        "unique_id": unique_id,
+                        "video_name": video_name,
+                        "video_idx": i,
+                        "frame_idx": mid_idx,
+                        "filename": filename,
+                        "settings_file": settings_filename,
+                        "timestamp": datetime.now().isoformat(),
+                        "parameters": mesh_settings
+                    }
+                    self._update_session_mesh_metadata(mesh_info)
+
                     generated_meshes.append({
+                        'unique_id': unique_id,
                         'video': video_name,
+                        'video_idx': i,
                         'frame': mid_idx,
                         'path': str(output_path)
                     })
@@ -3519,7 +3862,7 @@ meshlab {output_path}
         progress(1.0, desc="완료!")
 
         if generated_meshes:
-            mesh_list = "\n".join([f"- {m['video']} (frame {m['frame']}): `{m['path']}`" for m in generated_meshes])
+            mesh_list = "\n".join([f"- {m['unique_id']} (frame {m['frame']}): `{m['path']}`" for m in generated_meshes])
             status = f"""### 전체 3D Mesh 생성 완료 ✅
 
 **생성된 메시**: {len(generated_meshes)}/{total}
@@ -3534,6 +3877,76 @@ meshlab {output_path}
             return str(output_dir), status
         else:
             return None, "3D Mesh 생성 실패 (모든 비디오)"
+
+    def _update_session_mesh_metadata(self, mesh_info: dict) -> bool:
+        """
+        세션 메타데이터에 3D mesh 정보 추가/업데이트
+
+        Args:
+            mesh_info: mesh 정보 딕셔너리 {video_name, frame_idx, filename, settings, ...}
+
+        Returns:
+            성공 여부
+        """
+        try:
+            if not self.current_session_path:
+                logger.warning("현재 세션 경로가 설정되지 않음 - mesh 메타데이터 업데이트 스킵")
+                return False
+
+            session_dir = Path(self.current_session_path)
+            metadata_path = session_dir / "session_metadata.json"
+
+            if not metadata_path.exists():
+                logger.warning(f"세션 메타데이터 없음: {metadata_path}")
+                return False
+
+            # 메타데이터 로드
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+
+            # 3d_meshes 필드 초기화 (없으면)
+            if '3d_meshes' not in metadata:
+                metadata['3d_meshes'] = []
+
+            # 기존 항목 중복 확인 (같은 비디오/프레임이면 업데이트)
+            updated = False
+            for i, existing in enumerate(metadata['3d_meshes']):
+                if (existing.get('video_name') == mesh_info.get('video_name') and
+                    existing.get('frame_idx') == mesh_info.get('frame_idx')):
+                    metadata['3d_meshes'][i] = mesh_info
+                    updated = True
+                    break
+
+            if not updated:
+                metadata['3d_meshes'].append(mesh_info)
+
+            # 메타데이터 저장
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"세션 메타데이터에 mesh 정보 {'업데이트' if updated else '추가'}: {mesh_info.get('filename')}")
+            return True
+
+        except Exception as e:
+            logger.error(f"세션 mesh 메타데이터 업데이트 실패: {e}")
+            return False
+
+    def _get_session_mesh_dir(self) -> Optional[Path]:
+        """
+        현재 세션의 3D mesh 저장 디렉토리 반환
+        세션이 없으면 기본 경로 반환
+        """
+        if self.current_session_path:
+            session_dir = Path(self.current_session_path)
+            mesh_dir = session_dir / "3d_meshes"
+            mesh_dir.mkdir(parents=True, exist_ok=True)
+            return mesh_dir
+        else:
+            # 세션이 없으면 기본 경로 사용
+            project_root = Path(__file__).parent.parent
+            mesh_dir = project_root / "outputs" / "3d_meshes"
+            mesh_dir.mkdir(parents=True, exist_ok=True)
+            return mesh_dir
 
     def save_annotation_session(self, session_name: str = "", save_as_new: bool = False) -> str:
         """
@@ -3744,7 +4157,7 @@ meshlab {output_path}
 
     def load_annotation_session(self, session_id: str) -> Tuple[np.ndarray, str]:
         """
-        저장된 annotation 세션 로드
+        저장된 annotation 세션 로드 (단일 비디오 세션 및 batch 세션 모두 지원)
         """
         try:
             session_dir = Path(f"outputs/sessions/{session_id}")
@@ -3756,61 +4169,78 @@ meshlab {output_path}
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
 
-            # 프레임 및 마스크 로드
-            num_frames = metadata["num_frames"]
-            self.frames = []
-            self.masks = []
+            # 세션 타입 확인 (batch vs single)
+            session_type = metadata.get("session_type", "single")
 
-            for i in range(num_frames):
-                frame_dir = session_dir / f"frame_{i:04d}"
-
-                # 원본 프레임 로드 (BGR→RGB 변환하여 self.frames는 항상 RGB로 유지)
-                frame_path = frame_dir / "original.png"
-                frame = cv2.imread(str(frame_path))
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                self.frames.append(frame_rgb)
-
-                # 마스크 로드 (있으면)
-                mask_path = frame_dir / "mask.png"
-                if mask_path.exists():
-                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-                    self.masks.append((mask > 0).astype(bool))
-                else:
-                    self.masks.append(None)
-
-            # Annotation points 복원
-            self.annotations = {
-                'foreground': metadata["annotations"]["foreground"],
-                'background': metadata["annotations"]["background"]
-            }
-
-            # 비디오 경로 및 현재 프레임 인덱스 복원
-            self.video_path = metadata["video_path"]
-            self.current_frame_idx = metadata["current_frame_idx"]
-
-            # 현재 프레임 시각화 (self.frames는 이미 RGB)
-            current_frame = self.frames[self.current_frame_idx]
-            current_mask = self.masks[self.current_frame_idx]
-
-            frame_rgb = current_frame.copy()  # 이미 RGB이므로 변환 불필요
-            if current_mask is not None:
-                overlay = frame_rgb.copy()
-                overlay[current_mask > 0] = [0, 255, 0]
-                result = cv2.addWeighted(frame_rgb, 0.6, overlay, 0.4, 0)
+            if session_type == "batch":
+                # Batch 세션 로드
+                return self._load_batch_session(session_id, session_dir, metadata)
             else:
-                result = frame_rgb
+                # 단일 비디오 세션 로드
+                return self._load_single_session(session_id, session_dir, metadata)
 
-            # Annotation points 표시
-            for px, py in self.annotations['foreground']:
-                cv2.circle(result, (px, py), 5, (0, 255, 0), -1)
-                cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
-            for px, py in self.annotations['background']:
-                cv2.circle(result, (px, py), 5, (255, 0, 0), -1)
-                cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            return None, f"로드 오류: {str(e)}\n\n```\n{error_detail}\n```"
 
-            masks_loaded = sum(1 for m in self.masks if m is not None)
+    def _load_single_session(self, session_id: str, session_dir: Path, metadata: dict) -> Tuple[np.ndarray, str]:
+        """단일 비디오 세션 로드"""
+        # 프레임 및 마스크 로드
+        num_frames = metadata["num_frames"]
+        self.frames = []
+        self.masks = []
 
-            status = f"""
+        for i in range(num_frames):
+            frame_dir = session_dir / f"frame_{i:04d}"
+
+            # 원본 프레임 로드 (BGR→RGB 변환하여 self.frames는 항상 RGB로 유지)
+            frame_path = frame_dir / "original.png"
+            frame = cv2.imread(str(frame_path))
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.frames.append(frame_rgb)
+
+            # 마스크 로드 (있으면)
+            mask_path = frame_dir / "mask.png"
+            if mask_path.exists():
+                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                self.masks.append((mask > 0).astype(bool))
+            else:
+                self.masks.append(None)
+
+        # Annotation points 복원
+        self.annotations = {
+            'foreground': metadata["annotations"]["foreground"],
+            'background': metadata["annotations"]["background"]
+        }
+
+        # 비디오 경로 및 현재 프레임 인덱스 복원
+        self.video_path = metadata["video_path"]
+        self.current_frame_idx = metadata["current_frame_idx"]
+
+        # 현재 프레임 시각화 (self.frames는 이미 RGB)
+        current_frame = self.frames[self.current_frame_idx]
+        current_mask = self.masks[self.current_frame_idx]
+
+        frame_rgb = current_frame.copy()  # 이미 RGB이므로 변환 불필요
+        if current_mask is not None:
+            overlay = frame_rgb.copy()
+            overlay[current_mask > 0] = [0, 255, 0]
+            result = cv2.addWeighted(frame_rgb, 0.6, overlay, 0.4, 0)
+        else:
+            result = frame_rgb
+
+        # Annotation points 표시
+        for px, py in self.annotations['foreground']:
+            cv2.circle(result, (px, py), 5, (0, 255, 0), -1)
+            cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
+        for px, py in self.annotations['background']:
+            cv2.circle(result, (px, py), 5, (255, 0, 0), -1)
+            cv2.circle(result, (px, py), 7, (255, 255, 255), 2)
+
+        masks_loaded = sum(1 for m in self.masks if m is not None)
+
+        status = f"""
 ### 세션 로드 완료 ✅
 
 **세션 ID**: `{session_id}`
@@ -3827,15 +4257,94 @@ meshlab {output_path}
 이제 프레임 네비게이션, 추가 annotation, propagation 등을 계속할 수 있습니다.
 """
 
-            # 현재 세션 경로 업데이트 (다음 저장 시 덮어쓰기용)
-            self.current_session_path = str(session_dir)
+        # 현재 세션 경로 업데이트 (다음 저장 시 덮어쓰기용)
+        self.current_session_path = str(session_dir)
 
-            return result, status
+        return result, status
 
-        except Exception as e:
-            import traceback
-            error_detail = traceback.format_exc()
-            return None, f"로드 오류: {str(e)}\n\n```\n{error_detail}\n```"
+    def _load_batch_session(self, session_id: str, session_dir: Path, metadata: dict) -> Tuple[np.ndarray, str]:
+        """
+        Batch 세션 로드 - batch_results 구조로 복원하여 퀄리티 체크 등에서 사용 가능
+        (Quick Mode에서 세션 로드 시 호출됨)
+        """
+        # load_batch_session의 핵심 로직 재사용
+        status_msg, _ = self.load_batch_session(str(session_dir))
+
+        # 첫 번째 비디오의 첫 번째 프레임 미리보기 생성
+        preview_image = None
+        video_list = self.get_batch_video_list()
+
+        if video_list and len(video_list) > 0:
+            first_video_dir = Path(video_list[0]['result_dir'])
+            frame_dirs = sorted([d for d in first_video_dir.iterdir() if d.is_dir() and d.name.startswith('frame_')])
+
+            if frame_dirs:
+                first_frame_dir = frame_dirs[0]
+                original_path = first_frame_dir / "original.png"
+                mask_path = first_frame_dir / "mask.png"
+
+                if original_path.exists():
+                    original = cv2.imread(str(original_path))
+                    original = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+
+                    if mask_path.exists():
+                        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                        # 오버레이 생성
+                        overlay = original.copy().astype(np.float32)
+                        mask_bool = mask > 127
+                        overlay[mask_bool] = overlay[mask_bool] * 0.6 + np.array([0, 255, 0]) * 0.4
+                        preview_image = overlay.astype(np.uint8)
+                    else:
+                        preview_image = original
+
+        # reference_annotations를 현재 annotations에도 설정 (Quick Mode 호환)
+        if hasattr(self, 'batch_results') and self.batch_results:
+            ref_annot = self.batch_results.get('reference_annotations', {'foreground': [], 'background': []})
+            self.annotations = {
+                'foreground': ref_annot.get('foreground', []),
+                'background': ref_annot.get('background', [])
+            }
+
+        # 현재 세션 경로 업데이트
+        self.current_session_path = str(session_dir)
+
+        # 상태 메시지에 Quick Mode용 안내 추가
+        total_videos = len(video_list) if video_list else 0
+        total_frames = sum(v['num_frames'] for v in video_list) if video_list else 0
+
+        video_list_str = ""
+        for v in video_list[:10]:
+            video_list_str += f"\n- **{v['video_name']}**: {v['num_frames']} 프레임"
+        if len(video_list) > 10:
+            video_list_str += f"\n- ... 외 {len(video_list) - 10}개 비디오"
+
+        per_video_count = len(self.per_video_annotations) if hasattr(self, 'per_video_annotations') and self.per_video_annotations else 0
+
+        status = f"""
+### 📂 Batch 세션 로드 완료 ✅
+
+**세션 ID**: `{session_id}`
+**세션 타입**: Batch ({total_videos}개 비디오)
+
+**로드된 데이터**:
+- 🎬 비디오 수: {total_videos}개
+- 📁 총 프레임: {total_frames}개
+- 📍 Reference Annotations: FG {len(self.annotations.get('foreground', []))}개, BG {len(self.annotations.get('background', []))}개
+- 🎯 Per-video Annotations: {per_video_count}개 비디오
+
+**비디오 목록**:{video_list_str}
+
+---
+
+### 사용 가능한 기능:
+1. **Batch Mode 탭**에서 **결과 시각화 & 퀄리티 체크** - 비디오별 마스크 확인
+2. **Export to Fauna** - 데이터셋 내보내기
+3. **프리뷰 비디오 생성** - 마스크 오버레이 영상
+
+> 💡 **Tip**: Batch Mode 탭으로 이동하여 비디오 목록을 새로고침하세요.
+"""
+
+        return preview_image, status
 
     def get_session_ids(self) -> List[str]:
         """저장된 세션 ID 목록 반환 (Dropdown용)"""
@@ -4942,8 +5451,13 @@ dataset:
                         outputs=[session_id_dropdown]
                     )
 
+                    # 세션 로드 핸들러 (batch/single 모두 지원)
+                    def load_session_handler(session_id):
+                        """세션 로드 - batch 세션인 경우 비디오 목록 정보도 상태에 포함"""
+                        return self.load_annotation_session(session_id)
+
                     load_session_btn.click(
-                        fn=self.load_annotation_session,
+                        fn=load_session_handler,
                         inputs=[session_id_dropdown],
                         outputs=[image_display, status_text]
                     )
@@ -5043,18 +5557,22 @@ dataset:
 
                             # 비디오 선택 UI (Accordion으로 감싸기)
                             with gr.Accordion("🎬 처리할 비디오 선택", open=True):
-                                # 전체 선택/해제 버튼 (상단)
-                                with gr.Row():
-                                    batch_select_all_btn = gr.Button("✅ 전체 선택", size="sm")
-                                    batch_deselect_all_btn = gr.Button("❌ 전체 해제", size="sm")
+                                # 비디오 목록을 접을 수 있는 Accordion으로 감싸기
+                                with gr.Accordion("📋 비디오 목록 (클릭하여 펼치기/접기)", open=True) as batch_video_accordion:
+                                    # 전체 선택/해제 버튼 (상단)
+                                    with gr.Row():
+                                        batch_select_all_btn = gr.Button("✅ 전체 선택", size="sm")
+                                        batch_deselect_all_btn = gr.Button("❌ 전체 해제", size="sm")
 
-                                batch_video_selection = gr.CheckboxGroup(
-                                    label="비디오 목록",
-                                    choices=[],
-                                    value=[],
-                                    interactive=True,
-                                    info="선택된 비디오만 처리됩니다"
-                                )
+                                    batch_video_selection = gr.CheckboxGroup(
+                                        label="비디오 목록",
+                                        choices=[],
+                                        value=[],
+                                        interactive=True,
+                                        info="선택된 비디오만 처리됩니다"
+                                    )
+
+                                    batch_video_count_info = gr.Markdown("**선택된 비디오**: 0개")
 
                             gr.Markdown("### 🎯 Reference Annotation")
 
@@ -5181,6 +5699,25 @@ dataset:
                                 type="numpy"
                             )
 
+                            # 프레임 슬라이더 - 이미지 바로 아래에 배치
+                            batch_vis_slider = gr.Slider(
+                                label="🎞️ 프레임 (슬라이더로 빠르게 탐색)",
+                                minimum=0,
+                                maximum=1,
+                                value=0,
+                                step=1,
+                                interactive=True
+                            )
+
+                            # 프레임 네비게이션 버튼
+                            with gr.Row():
+                                batch_vis_prev_btn = gr.Button("◀️ 이전", size="sm")
+                                batch_vis_next_btn = gr.Button("▶️ 다음", size="sm")
+                                batch_vis_first_btn = gr.Button("⏮️ 처음", size="sm")
+                                batch_vis_last_btn = gr.Button("⏭️ 끝", size="sm")
+
+                            batch_vis_info = gr.Markdown("비디오를 선택하고 프레임을 탐색하세요.")
+
                             batch_status_text = gr.Markdown("### 상태: 대기 중")
 
                             batch_output_path = gr.Textbox(
@@ -5214,24 +5751,7 @@ dataset:
                                     interactive=True
                                 )
 
-                                # 프레임 슬라이더
-                                batch_vis_slider = gr.Slider(
-                                    label="프레임",
-                                    minimum=0,
-                                    maximum=1,
-                                    value=0,
-                                    step=1,
-                                    interactive=True
-                                )
-
-                                batch_vis_info = gr.Markdown("Batch Propagate 실행 후 결과를 확인할 수 있습니다.")
-
-                                # 프레임 네비게이션
-                                with gr.Row():
-                                    batch_vis_prev_btn = gr.Button("◀️ 이전", size="sm")
-                                    batch_vis_next_btn = gr.Button("▶️ 다음", size="sm")
-                                    batch_vis_first_btn = gr.Button("⏮️ 처음", size="sm")
-                                    batch_vis_last_btn = gr.Button("⏭️ 끝", size="sm")
+                                # 프레임 슬라이더와 네비게이션 버튼은 이미지 바로 아래로 이동됨 (위 참조)
 
                                 gr.Markdown("---")
                                 gr.Markdown("**🎬 프리뷰 영상 생성** (저해상도 빠른 확인)")
@@ -5341,6 +5861,29 @@ dataset:
                                     batch_gen_all_mesh_btn = gr.Button("📦 전체 비디오 3D Mesh", variant="secondary")
                                 batch_mesh_output = gr.File(label="생성된 3D Mesh", interactive=False)
 
+                                # ===== 프레임 선택 리스트 기능 =====
+                                gr.Markdown("---")
+                                gr.Markdown("**📋 선택 프레임 일괄 3D Mesh 생성**")
+                                gr.Markdown("프레임 탐색 중 원하는 프레임을 선택하여 리스트에 추가한 뒤 일괄 생성하세요.")
+
+                                with gr.Row():
+                                    batch_add_frame_btn = gr.Button("➕ 현재 프레임 추가", variant="secondary", size="sm")
+                                    batch_clear_frame_list_btn = gr.Button("🗑️ 목록 초기화", size="sm")
+
+                                batch_selected_frames_display = gr.Markdown("**선택된 프레임**: 없음")
+
+                                # 선택된 프레임 저장용 State
+                                batch_selected_frames_state = gr.State([])
+
+                                with gr.Row():
+                                    batch_gen_selected_mesh_btn = gr.Button(
+                                        "🎯 선택 프레임 일괄 3D Mesh 생성",
+                                        variant="primary",
+                                        size="lg"
+                                    )
+
+                                batch_selected_mesh_status = gr.Markdown("")
+
                                 gr.Markdown("---")
                                 gr.Markdown("**📤 내보내기**")
                                 with gr.Row():
@@ -5358,20 +5901,32 @@ dataset:
                     def select_all_videos():
                         if hasattr(self, 'batch_video_label_map'):
                             all_labels = list(self.batch_video_label_map.keys())
-                            return gr.CheckboxGroup(value=all_labels)
-                        return gr.CheckboxGroup(value=[])
+                            count = len(all_labels)
+                            return gr.CheckboxGroup(value=all_labels), f"**선택된 비디오**: {count}개"
+                        return gr.CheckboxGroup(value=[]), "**선택된 비디오**: 0개"
 
                     def deselect_all_videos():
-                        return gr.CheckboxGroup(value=[])
+                        return gr.CheckboxGroup(value=[]), "**선택된 비디오**: 0개"
+
+                    def update_video_count(selected):
+                        """비디오 선택 수 업데이트"""
+                        count = len(selected) if selected else 0
+                        return f"**선택된 비디오**: {count}개"
 
                     batch_select_all_btn.click(
                         fn=select_all_videos,
-                        outputs=[batch_video_selection]
+                        outputs=[batch_video_selection, batch_video_count_info]
                     )
 
                     batch_deselect_all_btn.click(
                         fn=deselect_all_videos,
-                        outputs=[batch_video_selection]
+                        outputs=[batch_video_selection, batch_video_count_info]
+                    )
+
+                    batch_video_selection.change(
+                        fn=update_video_count,
+                        inputs=[batch_video_selection],
+                        outputs=[batch_video_count_info]
                     )
 
                     # Reference frame 로드
@@ -5434,11 +5989,30 @@ dataset:
                         outputs=[batch_load_session_dropdown]
                     )
 
-                    # 세션 로드
+                    # 세션 로드 (비디오 목록도 함께 업데이트)
+                    def load_batch_session_and_refresh(session_path):
+                        """Batch 세션 로드 후 비디오 목록도 업데이트"""
+                        status_msg, output_path = self.load_batch_session(session_path)
+
+                        # 비디오 목록 업데이트 (unique_id 포함: mouse+camera+frame)
+                        video_list = self.get_batch_video_list()
+                        if video_list:
+                            choices = []
+                            for v in video_list:
+                                # unique_id 사용 (예: m1_cam1_0)
+                                unique_id = v.get('unique_id', v['video_name'])
+                                label = f"[{v['video_idx']}] {unique_id} ({v['num_frames']}f)"
+                                choices.append((label, v['video_idx']))
+                            video_dropdown = gr.Dropdown(choices=choices, value=choices[0][1] if choices else None)
+                        else:
+                            video_dropdown = gr.Dropdown(choices=[], value=None)
+
+                        return status_msg, output_path, video_dropdown
+
                     batch_load_session_btn.click(
-                        fn=self.load_batch_session,
+                        fn=load_batch_session_and_refresh,
                         inputs=[batch_load_session_dropdown],
-                        outputs=[batch_status_text, batch_output_path]
+                        outputs=[batch_status_text, batch_output_path, batch_preview_video_select]
                     )
 
                     # 세션 삭제
@@ -5558,10 +6132,15 @@ dataset:
 
                     # 비디오 목록 새로고침
                     def refresh_preview_video_list():
-                        """프리뷰용 비디오 목록 업데이트"""
+                        """프리뷰용 비디오 목록 업데이트 (unique_id 포함: mouse+camera+frame)"""
                         video_list = self.get_batch_video_list()
                         if video_list:
-                            choices = [(f"[{v['video_idx']}] {v['video_name']} ({v['num_frames']}f)", v['video_idx']) for v in video_list]
+                            choices = []
+                            for v in video_list:
+                                # unique_id 사용 (예: m1_cam1_0)
+                                unique_id = v.get('unique_id', v['video_name'])
+                                label = f"[{v['video_idx']}] {unique_id} ({v['num_frames']}f)"
+                                choices.append((label, v['video_idx']))
                             return gr.Dropdown(choices=choices, value=choices[0][1] if choices else None)
                         return gr.Dropdown(choices=[], value=None)
 
@@ -5762,6 +6341,79 @@ dataset:
                             batch_mesh_texture_baking, batch_mesh_texture_size, batch_mesh_vertex_color
                         ],
                         outputs=[batch_mesh_output, batch_status_text]
+                    )
+
+                    # ===== 프레임 선택 리스트 이벤트 핸들러 =====
+                    def add_current_frame_to_list(video_idx, frame_idx, selected_frames):
+                        """현재 프레임을 선택 목록에 추가"""
+                        if video_idx is None or frame_idx is None:
+                            return selected_frames, "**선택된 프레임**: 비디오/프레임을 먼저 선택하세요"
+
+                        video_list = self.get_batch_video_list()
+                        video_name = "unknown"
+                        for v in video_list:
+                            if v['video_idx'] == video_idx:
+                                video_name = v['video_name']
+                                break
+
+                        frame_info = {
+                            'video_idx': int(video_idx),
+                            'video_name': video_name,
+                            'frame_idx': int(frame_idx)
+                        }
+
+                        # 중복 체크
+                        for existing in selected_frames:
+                            if existing['video_idx'] == frame_info['video_idx'] and existing['frame_idx'] == frame_info['frame_idx']:
+                                # 이미 존재함
+                                display = format_selected_frames_display(selected_frames)
+                                return selected_frames, display + "\n\n⚠️ 이미 추가된 프레임입니다."
+
+                        selected_frames.append(frame_info)
+                        display = format_selected_frames_display(selected_frames)
+                        return selected_frames, display
+
+                    def clear_frame_list():
+                        """프레임 목록 초기화"""
+                        return [], "**선택된 프레임**: 없음"
+
+                    def format_selected_frames_display(selected_frames):
+                        """선택된 프레임 목록 표시 텍스트 생성"""
+                        if not selected_frames:
+                            return "**선택된 프레임**: 없음"
+
+                        display = f"**선택된 프레임**: {len(selected_frames)}개\n\n"
+                        for i, f in enumerate(selected_frames):
+                            display += f"{i+1}. **{f['video_name']}** - frame {f['frame_idx']}\n"
+                        return display
+
+                    def generate_selected_meshes(selected_frames, seed, s1, s2, pp, sr, tb, ts, vc, progress=gr.Progress()):
+                        """선택된 프레임들의 3D Mesh 생성"""
+                        output_path, status = self.batch_generate_3d_mesh_selected(
+                            selected_frames, seed, s1, s2, pp, sr, tb, ts, vc, progress
+                        )
+                        return status
+
+                    batch_add_frame_btn.click(
+                        fn=add_current_frame_to_list,
+                        inputs=[current_preview_video_idx, batch_vis_slider, batch_selected_frames_state],
+                        outputs=[batch_selected_frames_state, batch_selected_frames_display]
+                    )
+
+                    batch_clear_frame_list_btn.click(
+                        fn=clear_frame_list,
+                        outputs=[batch_selected_frames_state, batch_selected_frames_display]
+                    )
+
+                    batch_gen_selected_mesh_btn.click(
+                        fn=generate_selected_meshes,
+                        inputs=[
+                            batch_selected_frames_state,
+                            batch_mesh_seed, batch_mesh_stage1_steps, batch_mesh_stage2_steps,
+                            batch_mesh_postprocess, batch_mesh_simplify_ratio,
+                            batch_mesh_texture_baking, batch_mesh_texture_size, batch_mesh_vertex_color
+                        ],
+                        outputs=[batch_selected_mesh_status]
                     )
 
                     # Batch propagate 완료 후 자동으로 프리뷰 목록 업데이트
