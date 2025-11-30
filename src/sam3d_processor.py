@@ -596,9 +596,24 @@ class SAM3DProcessor:
 
         try:
             # 이미지와 마스크 병합 (Inference 클래스의 merge_mask_to_rgba와 동일)
-            mask_uint8 = mask.astype(np.uint8) * 255
+            # 마스크 전처리: 0-1 또는 0-255 범위 모두 처리
+            if mask.max() <= 1:
+                mask_uint8 = (mask * 255).astype(np.uint8)
+            else:
+                mask_uint8 = mask.astype(np.uint8)
+
+            # 마스크 디버그 정보
+            mask_nonzero = np.count_nonzero(mask_uint8)
+            print(f"   Mask stats: min={mask_uint8.min()}, max={mask_uint8.max()}, nonzero={mask_nonzero}, shape={mask_uint8.shape}")
+
+            if mask_nonzero == 0:
+                raise ValueError("마스크가 비어 있습니다 (모든 픽셀이 0)")
+
             mask_channel = mask_uint8[..., None] if mask_uint8.ndim == 2 else mask_uint8
             rgba_image = np.concatenate([frame[..., :3], mask_channel], axis=-1)
+
+            print(f"   RGBA image: shape={rgba_image.shape}, dtype={rgba_image.dtype}")
+            print(f"   RGBA alpha channel: min={rgba_image[..., 3].min()}, max={rgba_image[..., 3].max()}")
 
             # Run SAM 3D inference with autocast for FP16 if enabled
             # pipeline.run을 직접 호출하여 파라미터 전달
