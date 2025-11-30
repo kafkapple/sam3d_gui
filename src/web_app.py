@@ -3108,19 +3108,19 @@ SAM2 체크포인트가 없습니다.
 2. Git LFS 설치: `sudo apt install git-lfs`
 """
 
-            # 대표 프레임 선택 (중간 프레임)
-            mid_idx = len(self.frames) // 2
-            frame = self.frames[mid_idx]
-            mask = self.masks[mid_idx]
+            # 현재 선택된 프레임 사용
+            frame_idx = self.current_frame_idx
+            frame = self.frames[frame_idx]
+            mask = self.masks[frame_idx] if frame_idx < len(self.masks) else None
 
-            logger.info(f"✓ 대표 프레임 선택: {mid_idx + 1}/{len(self.frames)}")
+            logger.info(f"✓ 현재 프레임 선택: {frame_idx + 1}/{len(self.frames)}")
             logger.debug(f"   Frame shape: {frame.shape}, dtype: {frame.dtype}")
             logger.debug(f"   Mask shape: {mask.shape if mask is not None else 'None'}")
             logger.debug(f"   Mask type: {type(mask)}, unique values: {np.unique(mask) if mask is not None else 'N/A'}")
 
             if mask is None:
-                logger.error("❌ 중간 프레임에 마스크 없음")
-                return None, "중간 프레임에 마스크가 없습니다"
+                logger.error(f"❌ 프레임 {frame_idx + 1}에 마스크 없음")
+                return None, f"프레임 {frame_idx + 1}에 마스크가 없습니다. 먼저 세그멘테이션을 수행하세요."
 
             # 3D 재구성 시도
             logger.info("✓ 3D 재구성 시작...")
@@ -3154,7 +3154,7 @@ SAM2 체크포인트가 없습니다.
                     output_dir.mkdir(parents=True, exist_ok=True)
 
                     timestamp = datetime.now().strftime("%H%M%S")
-                    filename = f"mesh_frame{mid_idx:04d}_{timestamp}.ply"
+                    filename = f"mesh_frame{frame_idx:04d}_{timestamp}.ply"
                     output_path = output_dir / filename
 
                     logger.info(f"✓ Mesh 저장 중: {output_path}")
@@ -3167,7 +3167,7 @@ SAM2 체크포인트가 없습니다.
                     status = f"""
 ### 3D Mesh 생성 완료 ✅
 
-- **프레임**: {mid_idx + 1} / {len(self.frames)}
+- **프레임**: {frame_idx + 1} / {len(self.frames)}
 - **저장 위치**: `{output_path}`
 
 ### 3D 뷰어로 확인:
@@ -3205,6 +3205,144 @@ meshlab {output_path}
         except Exception as e:
             import traceback
             return None, f"오류:\n{str(e)}\n{traceback.format_exc()}"
+
+    def batch_generate_3d_mesh_current(self, video_idx: int, frame_idx: int, progress=gr.Progress()) -> Tuple[str, str]:
+        """
+        Batch mode: 현재 선택된 비디오/프레임의 3D Mesh 생성
+        """
+        from datetime import datetime
+
+        if not hasattr(self, 'batch_results') or not self.batch_results:
+            return None, "먼저 Batch Propagate를 실행하세요."
+
+        if video_idx < 0 or video_idx >= len(self.batch_results):
+            return None, f"잘못된 비디오 인덱스: {video_idx}"
+
+        video_result = self.batch_results[video_idx]
+        video_name = video_result.get('video_name', f'video_{video_idx:03d}')
+        masks = video_result.get('masks', [])
+        frames = video_result.get('frames', [])
+
+        if not masks or not frames:
+            return None, f"비디오 {video_name}에 마스크/프레임 없음"
+
+        if frame_idx < 0 or frame_idx >= len(masks):
+            return None, f"잘못된 프레임 인덱스: {frame_idx}"
+
+        frame = frames[frame_idx]
+        mask = masks[frame_idx]
+
+        if mask is None:
+            return None, f"프레임 {frame_idx}에 마스크가 없습니다."
+
+        logger.info(f"Batch 3D Mesh 생성: {video_name}, frame {frame_idx}")
+        progress(0.3, desc="SAM 3D 초기화 중...")
+
+        # Unload SAM2 for memory
+        self.unload_sam2_models()
+
+        try:
+            progress(0.5, desc="3D 재구성 중...")
+            reconstruction = self.processor.reconstruct_3d(frame, mask)
+
+            if reconstruction:
+                # 세션 기반 폴더 구조
+                project_root = Path(__file__).parent.parent
+                session_name = getattr(self, 'batch_session_name', 'batch_session')
+                output_dir = project_root / "outputs" / "3d_meshes" / session_name
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                timestamp = datetime.now().strftime("%H%M%S")
+                filename = f"{video_name}_frame{frame_idx:04d}_{timestamp}.ply"
+                output_path = output_dir / filename
+
+                self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+                logger.info(f"Mesh 저장 완료: {output_path}")
+
+                progress(1.0, desc="완료!")
+                self.reload_sam2_models()
+
+                return str(output_path), f"### 3D Mesh 생성 완료 ✅\n\n- **비디오**: {video_name}\n- **프레임**: {frame_idx + 1}\n- **저장 위치**: `{output_path}`"
+            else:
+                self.reload_sam2_models()
+                return None, "3D 재구성 실패"
+
+        except Exception as e:
+            logger.error(f"Batch 3D Mesh 생성 실패: {e}")
+            self.reload_sam2_models()
+            return None, f"3D Mesh 생성 실패: {str(e)}"
+
+    def batch_generate_3d_mesh_all(self, progress=gr.Progress()) -> Tuple[str, str]:
+        """
+        Batch mode: 모든 비디오의 중간 프레임에서 3D Mesh 생성
+        """
+        from datetime import datetime
+
+        if not hasattr(self, 'batch_results') or not self.batch_results:
+            return None, "먼저 Batch Propagate를 실행하세요."
+
+        project_root = Path(__file__).parent.parent
+        session_name = getattr(self, 'batch_session_name', 'batch_session')
+        output_dir = project_root / "outputs" / "3d_meshes" / session_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        generated_meshes = []
+        total = len(self.batch_results)
+
+        for i, video_result in enumerate(self.batch_results):
+            video_name = video_result.get('video_name', f'video_{i:03d}')
+            masks = video_result.get('masks', [])
+            frames = video_result.get('frames', [])
+
+            if not masks or not frames:
+                logger.warning(f"Skip {video_name}: no masks/frames")
+                continue
+
+            # 중간 프레임 선택
+            mid_idx = len(frames) // 2
+            frame = frames[mid_idx]
+            mask = masks[mid_idx]
+
+            if mask is None:
+                logger.warning(f"Skip {video_name}: no mask at frame {mid_idx}")
+                continue
+
+            progress((i + 0.5) / total, desc=f"3D Mesh 생성 중: {video_name}")
+
+            # 첫 번째 비디오 전에 SAM2 언로드
+            if i == 0:
+                self.unload_sam2_models()
+
+            try:
+                reconstruction = self.processor.reconstruct_3d(frame, mask)
+
+                if reconstruction:
+                    timestamp = datetime.now().strftime("%H%M%S")
+                    filename = f"{video_name}_frame{mid_idx:04d}_{timestamp}.ply"
+                    output_path = output_dir / filename
+
+                    self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+                    generated_meshes.append({
+                        'video': video_name,
+                        'frame': mid_idx,
+                        'path': str(output_path)
+                    })
+                    logger.info(f"Generated: {filename}")
+
+            except Exception as e:
+                logger.error(f"Failed {video_name}: {e}")
+                continue
+
+        # SAM2 다시 로드
+        self.reload_sam2_models()
+
+        progress(1.0, desc="완료!")
+
+        if generated_meshes:
+            mesh_list = "\n".join([f"- {m['video']} (frame {m['frame']}): `{m['path']}`" for m in generated_meshes])
+            return str(output_dir), f"### 전체 3D Mesh 생성 완료 ✅\n\n**생성된 메시**: {len(generated_meshes)}/{total}\n\n{mesh_list}"
+        else:
+            return None, "3D Mesh 생성 실패 (모든 비디오)"
 
     def save_annotation_session(self, session_name: str = "", save_as_new: bool = False) -> str:
         """
@@ -4859,6 +4997,13 @@ dataset:
                                 )
 
                                 gr.Markdown("---")
+                                gr.Markdown("**🎯 3D Mesh 생성**")
+                                with gr.Row():
+                                    batch_gen_mesh_btn = gr.Button("🎯 현재 프레임 3D Mesh", variant="primary")
+                                    batch_gen_all_mesh_btn = gr.Button("📦 전체 비디오 3D Mesh", variant="secondary")
+                                batch_mesh_output = gr.File(label="생성된 3D Mesh", interactive=False)
+
+                                gr.Markdown("---")
                                 gr.Markdown("**📤 내보내기**")
                                 with gr.Row():
                                     batch_gen_vis_btn = gr.Button("🎨 시각화 이미지 저장", variant="secondary")
@@ -5254,6 +5399,19 @@ dataset:
                     batch_gen_video_btn.click(
                         fn=lambda: self.generate_batch_visualization(output_format="video"),
                         outputs=[batch_output_path, batch_status_text]
+                    )
+
+                    # 현재 프레임 3D Mesh 생성
+                    batch_gen_mesh_btn.click(
+                        fn=lambda video_idx, frame_idx: self.batch_generate_3d_mesh_current(video_idx, int(frame_idx)),
+                        inputs=[current_preview_video_idx, batch_vis_slider],
+                        outputs=[batch_mesh_output, batch_status_text]
+                    )
+
+                    # 전체 비디오 3D Mesh 생성
+                    batch_gen_all_mesh_btn.click(
+                        fn=self.batch_generate_3d_mesh_all,
+                        outputs=[batch_mesh_output, batch_status_text]
                     )
 
                     # Batch propagate 완료 후 자동으로 프리뷰 목록 업데이트
