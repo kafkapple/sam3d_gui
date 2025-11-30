@@ -5935,7 +5935,7 @@ dataset:
                                     batch_mesh_postprocess = gr.Checkbox(
                                         label="Mesh 후처리 (단순화, 홀 채우기)",
                                         value=False,
-                                        info="활성화 시 처리 시간 증가"
+                                        info="⚠️ nvdiffrast 필요 - 미설치 시 비활성화 권장"
                                     )
                                     batch_mesh_simplify_ratio = gr.Slider(
                                         label="Simplify Ratio",
