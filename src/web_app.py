@@ -3042,10 +3042,42 @@ SAM2 체크포인트가 없습니다.
             print(f"다운로드 실패: {e}")
             return False
 
-    def generate_3d_mesh(self, progress=gr.Progress()) -> Tuple[str, str]:
+    def generate_3d_mesh(
+        self,
+        seed: int = 42,
+        stage1_steps: int = 25,
+        stage2_steps: int = 25,
+        with_postprocess: bool = False,
+        simplify_ratio: float = 0.95,
+        with_texture_baking: bool = False,
+        texture_size: int = 1024,
+        use_vertex_color: bool = True,
+        progress=gr.Progress()
+    ) -> Tuple[str, str]:
         """
         세그멘테이션 결과로 3D mesh 생성
+
+        Args:
+            seed: 랜덤 시드 (재현성)
+            stage1_steps: Stage 1 diffusion steps
+            stage2_steps: Stage 2 diffusion steps
+            with_postprocess: 후처리 활성화
+            simplify_ratio: Face 유지 비율
+            with_texture_baking: 텍스처 베이킹
+            texture_size: 텍스처 해상도
+            use_vertex_color: 버텍스 컬러 사용
         """
+        # 메시 파라미터 설정 저장
+        mesh_settings = {
+            "seed": int(seed),
+            "stage1_inference_steps": int(stage1_steps),
+            "stage2_inference_steps": int(stage2_steps),
+            "with_mesh_postprocess": with_postprocess,
+            "simplify_ratio": float(simplify_ratio),
+            "with_texture_baking": with_texture_baking,
+            "texture_size": int(texture_size),
+            "use_vertex_color": use_vertex_color
+        }
         logger.info("=" * 60)
         logger.info("🔹 generate_3d_mesh() 시작")
         logger.info("=" * 60)
@@ -3124,6 +3156,7 @@ SAM2 체크포인트가 없습니다.
 
             # 3D 재구성 시도
             logger.info("✓ 3D 재구성 시작...")
+            logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
             logger.debug(f"   SAM3DProcessor checkpoint: {self.processor.sam3d_checkpoint}")
             progress(0.5, desc="SAM 3D 재구성 중...")
 
@@ -3138,7 +3171,12 @@ SAM2 체크포인트가 없습니다.
                     mem_before = torch.cuda.memory_allocated() / 1024**3
                     logger.debug(f"   GPU 메모리 (inference 전): {mem_before:.2f} GB")
 
-                reconstruction = self.processor.reconstruct_3d(frame, mask)
+                # 파라미터를 전달하여 재구성
+                reconstruction = self.processor.reconstruct_3d(
+                    frame, mask,
+                    seed=mesh_settings['seed'],
+                    mesh_settings=mesh_settings
+                )
 
                 if torch.cuda.is_available():
                     mem_after = torch.cuda.memory_allocated() / 1024**3
@@ -3149,6 +3187,7 @@ SAM2 체크포인트가 없습니다.
                 if reconstruction:
                     # PLY 저장 - 프레임 번호와 타임스탬프로 고유 파일명 생성
                     from datetime import datetime
+                    import json
                     project_root = Path(__file__).parent.parent
                     output_dir = project_root / "outputs" / "3d_meshes"
                     output_dir.mkdir(parents=True, exist_ok=True)
@@ -3162,6 +3201,26 @@ SAM2 체크포인트가 없습니다.
                     logger.info(f"✓ Mesh 저장 완료")
                     logger.debug(f"   Output keys: {reconstruction.keys() if isinstance(reconstruction, dict) else 'N/A'}")
 
+                    # 설정 파일 저장
+                    settings_filename = f"mesh_frame{frame_idx:04d}_{timestamp}_settings.json"
+                    settings_path = output_dir / settings_filename
+                    settings_data = {
+                        "timestamp": datetime.now().isoformat(),
+                        "source": {
+                            "video_path": getattr(self, 'video_path', None),
+                            "frame_idx": frame_idx,
+                            "total_frames": len(self.frames)
+                        },
+                        "parameters": mesh_settings,
+                        "output": {
+                            "filename": filename,
+                            "format": "ply"
+                        }
+                    }
+                    with open(settings_path, 'w', encoding='utf-8') as f:
+                        json.dump(settings_data, f, indent=2, ensure_ascii=False)
+                    logger.info(f"✓ 설정 저장: {settings_path}")
+
                     progress(1.0, desc="완료!")
 
                     status = f"""
@@ -3169,6 +3228,12 @@ SAM2 체크포인트가 없습니다.
 
 - **프레임**: {frame_idx + 1} / {len(self.frames)}
 - **저장 위치**: `{output_path}`
+- **설정 파일**: `{settings_path}`
+
+**파라미터:**
+- Seed: {mesh_settings['seed']}
+- Steps: {mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}
+- 후처리: {'✓' if mesh_settings['with_mesh_postprocess'] else '✗'}
 
 ### 3D 뷰어로 확인:
 ```bash
@@ -3206,11 +3271,37 @@ meshlab {output_path}
             import traceback
             return None, f"오류:\n{str(e)}\n{traceback.format_exc()}"
 
-    def batch_generate_3d_mesh_current(self, video_idx: int, frame_idx: int, progress=gr.Progress()) -> Tuple[str, str]:
+    def batch_generate_3d_mesh_current(
+        self,
+        video_idx: int,
+        frame_idx: int,
+        seed: int = 42,
+        stage1_steps: int = 25,
+        stage2_steps: int = 25,
+        with_postprocess: bool = False,
+        simplify_ratio: float = 0.95,
+        with_texture_baking: bool = False,
+        texture_size: int = 1024,
+        use_vertex_color: bool = True,
+        progress=gr.Progress()
+    ) -> Tuple[str, str]:
         """
         Batch mode: 현재 선택된 비디오/프레임의 3D Mesh 생성
         """
         from datetime import datetime
+        import json
+
+        # 메시 파라미터 설정
+        mesh_settings = {
+            "seed": int(seed),
+            "stage1_inference_steps": int(stage1_steps),
+            "stage2_inference_steps": int(stage2_steps),
+            "with_mesh_postprocess": with_postprocess,
+            "simplify_ratio": float(simplify_ratio),
+            "with_texture_baking": with_texture_baking,
+            "texture_size": int(texture_size),
+            "use_vertex_color": use_vertex_color
+        }
 
         if not hasattr(self, 'batch_results') or not self.batch_results:
             return None, "먼저 Batch Propagate를 실행하세요."
@@ -3236,6 +3327,7 @@ meshlab {output_path}
             return None, f"프레임 {frame_idx}에 마스크가 없습니다."
 
         logger.info(f"Batch 3D Mesh 생성: {video_name}, frame {frame_idx}")
+        logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
         progress(0.3, desc="SAM 3D 초기화 중...")
 
         # Unload SAM2 for memory
@@ -3243,7 +3335,11 @@ meshlab {output_path}
 
         try:
             progress(0.5, desc="3D 재구성 중...")
-            reconstruction = self.processor.reconstruct_3d(frame, mask)
+            reconstruction = self.processor.reconstruct_3d(
+                frame, mask,
+                seed=mesh_settings['seed'],
+                mesh_settings=mesh_settings
+            )
 
             if reconstruction:
                 # 세션 기반 폴더 구조
@@ -3259,10 +3355,42 @@ meshlab {output_path}
                 self.processor.export_mesh(reconstruction, str(output_path), format='ply')
                 logger.info(f"Mesh 저장 완료: {output_path}")
 
+                # 설정 파일 저장
+                settings_filename = f"{video_name}_frame{frame_idx:04d}_{timestamp}_settings.json"
+                settings_path = output_dir / settings_filename
+                settings_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "source": {
+                        "session_name": session_name,
+                        "video_name": video_name,
+                        "frame_idx": frame_idx,
+                        "total_frames": len(frames)
+                    },
+                    "parameters": mesh_settings,
+                    "output": {
+                        "filename": filename,
+                        "format": "ply"
+                    }
+                }
+                with open(settings_path, 'w', encoding='utf-8') as f:
+                    json.dump(settings_data, f, indent=2, ensure_ascii=False)
+
                 progress(1.0, desc="완료!")
                 self.reload_sam2_models()
 
-                return str(output_path), f"### 3D Mesh 생성 완료 ✅\n\n- **비디오**: {video_name}\n- **프레임**: {frame_idx + 1}\n- **저장 위치**: `{output_path}`"
+                status = f"""### 3D Mesh 생성 완료 ✅
+
+- **비디오**: {video_name}
+- **프레임**: {frame_idx + 1}
+- **저장 위치**: `{output_path}`
+- **설정 파일**: `{settings_path}`
+
+**파라미터:**
+- Seed: {mesh_settings['seed']}
+- Steps: {mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}
+- 후처리: {'✓' if mesh_settings['with_mesh_postprocess'] else '✗'}
+"""
+                return str(output_path), status
             else:
                 self.reload_sam2_models()
                 return None, "3D 재구성 실패"
@@ -3272,11 +3400,35 @@ meshlab {output_path}
             self.reload_sam2_models()
             return None, f"3D Mesh 생성 실패: {str(e)}"
 
-    def batch_generate_3d_mesh_all(self, progress=gr.Progress()) -> Tuple[str, str]:
+    def batch_generate_3d_mesh_all(
+        self,
+        seed: int = 42,
+        stage1_steps: int = 25,
+        stage2_steps: int = 25,
+        with_postprocess: bool = False,
+        simplify_ratio: float = 0.95,
+        with_texture_baking: bool = False,
+        texture_size: int = 1024,
+        use_vertex_color: bool = True,
+        progress=gr.Progress()
+    ) -> Tuple[str, str]:
         """
         Batch mode: 모든 비디오의 중간 프레임에서 3D Mesh 생성
         """
         from datetime import datetime
+        import json
+
+        # 메시 파라미터 설정
+        mesh_settings = {
+            "seed": int(seed),
+            "stage1_inference_steps": int(stage1_steps),
+            "stage2_inference_steps": int(stage2_steps),
+            "with_mesh_postprocess": with_postprocess,
+            "simplify_ratio": float(simplify_ratio),
+            "with_texture_baking": with_texture_baking,
+            "texture_size": int(texture_size),
+            "use_vertex_color": use_vertex_color
+        }
 
         if not hasattr(self, 'batch_results') or not self.batch_results:
             return None, "먼저 Batch Propagate를 실행하세요."
@@ -3288,6 +3440,9 @@ meshlab {output_path}
 
         generated_meshes = []
         total = len(self.batch_results)
+
+        logger.info(f"전체 3D Mesh 생성 시작: {total}개 비디오")
+        logger.info(f"   Mesh 설정: seed={mesh_settings['seed']}, steps={mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}")
 
         for i, video_result in enumerate(self.batch_results):
             video_name = video_result.get('video_name', f'video_{i:03d}')
@@ -3314,7 +3469,11 @@ meshlab {output_path}
                 self.unload_sam2_models()
 
             try:
-                reconstruction = self.processor.reconstruct_3d(frame, mask)
+                reconstruction = self.processor.reconstruct_3d(
+                    frame, mask,
+                    seed=mesh_settings['seed'],
+                    mesh_settings=mesh_settings
+                )
 
                 if reconstruction:
                     timestamp = datetime.now().strftime("%H%M%S")
@@ -3322,6 +3481,27 @@ meshlab {output_path}
                     output_path = output_dir / filename
 
                     self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+
+                    # 설정 파일 저장
+                    settings_filename = f"{video_name}_frame{mid_idx:04d}_{timestamp}_settings.json"
+                    settings_path = output_dir / settings_filename
+                    settings_data = {
+                        "timestamp": datetime.now().isoformat(),
+                        "source": {
+                            "session_name": session_name,
+                            "video_name": video_name,
+                            "frame_idx": mid_idx,
+                            "total_frames": len(frames)
+                        },
+                        "parameters": mesh_settings,
+                        "output": {
+                            "filename": filename,
+                            "format": "ply"
+                        }
+                    }
+                    with open(settings_path, 'w', encoding='utf-8') as f:
+                        json.dump(settings_data, f, indent=2, ensure_ascii=False)
+
                     generated_meshes.append({
                         'video': video_name,
                         'frame': mid_idx,
@@ -3340,7 +3520,18 @@ meshlab {output_path}
 
         if generated_meshes:
             mesh_list = "\n".join([f"- {m['video']} (frame {m['frame']}): `{m['path']}`" for m in generated_meshes])
-            return str(output_dir), f"### 전체 3D Mesh 생성 완료 ✅\n\n**생성된 메시**: {len(generated_meshes)}/{total}\n\n{mesh_list}"
+            status = f"""### 전체 3D Mesh 생성 완료 ✅
+
+**생성된 메시**: {len(generated_meshes)}/{total}
+
+**파라미터:**
+- Seed: {mesh_settings['seed']}
+- Steps: {mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}
+- 후처리: {'✓' if mesh_settings['with_mesh_postprocess'] else '✗'}
+
+{mesh_list}
+"""
+            return str(output_dir), status
         else:
             return None, "3D Mesh 생성 실패 (모든 비디오)"
 
@@ -4508,9 +4699,77 @@ dataset:
                                 save_session_btn = gr.Button("💾 저장", variant="secondary", scale=1)
                                 save_session_new_btn = gr.Button("📝 새로 저장", variant="secondary", scale=1)
 
-                            gr.Markdown("### 🎲 3D & 출력")
+                            gr.Markdown("### 🎲 3D Mesh 설정")
 
-                            mesh_btn = gr.Button("🎲 Generate 3D Mesh")
+                            with gr.Accordion("⚙️ Mesh 파라미터", open=False):
+                                mesh_seed = gr.Number(
+                                    label="Seed (재현성)",
+                                    value=42,
+                                    precision=0,
+                                    info="동일 seed = 동일 결과"
+                                )
+                                with gr.Row():
+                                    mesh_stage1_steps = gr.Slider(
+                                        label="Stage1 Steps",
+                                        minimum=5,
+                                        maximum=50,
+                                        value=25,
+                                        step=5,
+                                        info="Sparse structure 품질"
+                                    )
+                                    mesh_stage2_steps = gr.Slider(
+                                        label="Stage2 Steps",
+                                        minimum=5,
+                                        maximum=50,
+                                        value=25,
+                                        step=5,
+                                        info="Latent feature 품질"
+                                    )
+                                mesh_postprocess = gr.Checkbox(
+                                    label="Mesh 후처리 (단순화, 홀 채우기)",
+                                    value=False,
+                                    info="활성화 시 처리 시간 증가"
+                                )
+                                mesh_simplify_ratio = gr.Slider(
+                                    label="Simplify Ratio",
+                                    minimum=0.5,
+                                    maximum=0.99,
+                                    value=0.95,
+                                    step=0.05,
+                                    info="Face 유지 비율 (0.95 = 5% 제거)",
+                                    visible=False
+                                )
+                                mesh_texture_baking = gr.Checkbox(
+                                    label="Texture Baking",
+                                    value=False,
+                                    info="텍스처 맵 생성 (추가 시간 필요)"
+                                )
+                                mesh_texture_size = gr.Dropdown(
+                                    label="Texture Size",
+                                    choices=[512, 1024, 2048],
+                                    value=1024,
+                                    visible=False
+                                )
+                                mesh_vertex_color = gr.Checkbox(
+                                    label="Vertex Color 사용",
+                                    value=True,
+                                    info="버텍스에 색상 저장"
+                                )
+
+                                # 후처리 체크박스에 따라 simplify_ratio 표시
+                                mesh_postprocess.change(
+                                    fn=lambda x: gr.update(visible=x),
+                                    inputs=[mesh_postprocess],
+                                    outputs=[mesh_simplify_ratio]
+                                )
+                                # 텍스처 베이킹 체크박스에 따라 texture_size 표시
+                                mesh_texture_baking.change(
+                                    fn=lambda x: gr.update(visible=x),
+                                    inputs=[mesh_texture_baking],
+                                    outputs=[mesh_texture_size]
+                                )
+
+                            mesh_btn = gr.Button("🎲 Generate 3D Mesh", variant="primary")
                             save_masks_btn = gr.Button("💾 Save Masks Only")
                             export_frames_btn = gr.Button("📤 Export Frames & Masks")
 
@@ -4643,6 +4902,16 @@ dataset:
 
                     mesh_btn.click(
                         fn=self.generate_3d_mesh,
+                        inputs=[
+                            mesh_seed,
+                            mesh_stage1_steps,
+                            mesh_stage2_steps,
+                            mesh_postprocess,
+                            mesh_simplify_ratio,
+                            mesh_texture_baking,
+                            mesh_texture_size,
+                            mesh_vertex_color
+                        ],
                         outputs=[mesh_file, status_text]
                     )
 
@@ -4998,6 +5267,75 @@ dataset:
 
                                 gr.Markdown("---")
                                 gr.Markdown("**🎯 3D Mesh 생성**")
+
+                                with gr.Accordion("⚙️ Mesh 파라미터", open=False):
+                                    batch_mesh_seed = gr.Number(
+                                        label="Seed (재현성)",
+                                        value=42,
+                                        precision=0,
+                                        info="동일 seed = 동일 결과"
+                                    )
+                                    with gr.Row():
+                                        batch_mesh_stage1_steps = gr.Slider(
+                                            label="Stage1 Steps",
+                                            minimum=5,
+                                            maximum=50,
+                                            value=25,
+                                            step=5,
+                                            info="Sparse structure 품질"
+                                        )
+                                        batch_mesh_stage2_steps = gr.Slider(
+                                            label="Stage2 Steps",
+                                            minimum=5,
+                                            maximum=50,
+                                            value=25,
+                                            step=5,
+                                            info="Latent feature 품질"
+                                        )
+                                    batch_mesh_postprocess = gr.Checkbox(
+                                        label="Mesh 후처리 (단순화, 홀 채우기)",
+                                        value=False,
+                                        info="활성화 시 처리 시간 증가"
+                                    )
+                                    batch_mesh_simplify_ratio = gr.Slider(
+                                        label="Simplify Ratio",
+                                        minimum=0.5,
+                                        maximum=0.99,
+                                        value=0.95,
+                                        step=0.05,
+                                        info="Face 유지 비율 (0.95 = 5% 제거)",
+                                        visible=False
+                                    )
+                                    batch_mesh_texture_baking = gr.Checkbox(
+                                        label="Texture Baking",
+                                        value=False,
+                                        info="텍스처 맵 생성 (추가 시간 필요)"
+                                    )
+                                    batch_mesh_texture_size = gr.Dropdown(
+                                        label="Texture Size",
+                                        choices=[512, 1024, 2048],
+                                        value=1024,
+                                        visible=False
+                                    )
+                                    batch_mesh_vertex_color = gr.Checkbox(
+                                        label="Vertex Color 사용",
+                                        value=True,
+                                        info="버텍스에 색상 저장"
+                                    )
+
+                                    # 후처리 체크박스에 따라 simplify_ratio 표시
+                                    batch_mesh_postprocess.change(
+                                        fn=lambda x: gr.update(visible=x),
+                                        inputs=[batch_mesh_postprocess],
+                                        outputs=[batch_mesh_simplify_ratio]
+                                    )
+                                    # 텍스처 베이킹 체크박스에 따라 texture_size 표시
+                                    batch_mesh_texture_baking.change(
+                                        fn=lambda x: gr.update(visible=x),
+                                        inputs=[batch_mesh_texture_baking],
+                                        outputs=[batch_mesh_texture_size]
+                                    )
+
                                 with gr.Row():
                                     batch_gen_mesh_btn = gr.Button("🎯 현재 프레임 3D Mesh", variant="primary")
                                     batch_gen_all_mesh_btn = gr.Button("📦 전체 비디오 3D Mesh", variant="secondary")
@@ -5403,14 +5741,26 @@ dataset:
 
                     # 현재 프레임 3D Mesh 생성
                     batch_gen_mesh_btn.click(
-                        fn=lambda video_idx, frame_idx: self.batch_generate_3d_mesh_current(video_idx, int(frame_idx)),
-                        inputs=[current_preview_video_idx, batch_vis_slider],
+                        fn=lambda video_idx, frame_idx, seed, s1, s2, pp, sr, tb, ts, vc: self.batch_generate_3d_mesh_current(
+                            video_idx, int(frame_idx), seed, s1, s2, pp, sr, tb, ts, vc
+                        ),
+                        inputs=[
+                            current_preview_video_idx, batch_vis_slider,
+                            batch_mesh_seed, batch_mesh_stage1_steps, batch_mesh_stage2_steps,
+                            batch_mesh_postprocess, batch_mesh_simplify_ratio,
+                            batch_mesh_texture_baking, batch_mesh_texture_size, batch_mesh_vertex_color
+                        ],
                         outputs=[batch_mesh_output, batch_status_text]
                     )
 
                     # 전체 비디오 3D Mesh 생성
                     batch_gen_all_mesh_btn.click(
                         fn=self.batch_generate_3d_mesh_all,
+                        inputs=[
+                            batch_mesh_seed, batch_mesh_stage1_steps, batch_mesh_stage2_steps,
+                            batch_mesh_postprocess, batch_mesh_simplify_ratio,
+                            batch_mesh_texture_baking, batch_mesh_texture_size, batch_mesh_vertex_color
+                        ],
                         outputs=[batch_mesh_output, batch_status_text]
                     )
 

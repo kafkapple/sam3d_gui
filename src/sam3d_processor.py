@@ -512,7 +512,8 @@ class SAM3DProcessor:
         frame: np.ndarray,
         mask: np.ndarray,
         seed: int = 42,
-        cleanup_after: bool = False
+        cleanup_after: bool = False,
+        mesh_settings: Dict = None
     ) -> Dict:
         """
         Reconstruct 3D object from frame and mask using SAM 3D
@@ -522,14 +523,35 @@ class SAM3DProcessor:
             mask: Binary segmentation mask
             seed: Random seed for reproducibility
             cleanup_after: Clean up model after inference to free VRAM
+            mesh_settings: Dictionary of mesh generation parameters
+                - stage1_inference_steps: int
+                - stage2_inference_steps: int
+                - with_mesh_postprocess: bool
+                - simplify_ratio: float
+                - with_texture_baking: bool
+                - texture_size: int
+                - use_vertex_color: bool
 
         Returns:
             Dictionary containing reconstruction results
         """
+        # 기본 설정
+        if mesh_settings is None:
+            mesh_settings = {
+                "stage1_inference_steps": 25,
+                "stage2_inference_steps": 25,
+                "with_mesh_postprocess": False,
+                "simplify_ratio": 0.95,
+                "with_texture_baking": False,
+                "texture_size": 1024,
+                "use_vertex_color": True
+            }
+
         print("\n🔹 3D Reconstruction 시작:")
         print(f"   Frame shape: {frame.shape}")
         print(f"   Mask shape: {mask.shape}")
         print(f"   Seed: {seed}")
+        print(f"   Mesh settings: steps={mesh_settings.get('stage1_inference_steps', 25)}/{mesh_settings.get('stage2_inference_steps', 25)}")
         print(f"   SAM3D checkpoint: {self.sam3d_checkpoint}")
 
         # Show memory status before initialization
@@ -563,14 +585,51 @@ class SAM3DProcessor:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        # 파라미터 추출
+        stage1_steps = mesh_settings.get('stage1_inference_steps', 25)
+        stage2_steps = mesh_settings.get('stage2_inference_steps', 25)
+        with_postprocess = mesh_settings.get('with_mesh_postprocess', False)
+        with_texture = mesh_settings.get('with_texture_baking', False)
+        use_vertex_color = mesh_settings.get('use_vertex_color', True)
+
+        print(f"   Parameters: stage1={stage1_steps}, stage2={stage2_steps}, postprocess={with_postprocess}")
+
         try:
+            # 이미지와 마스크 병합 (Inference 클래스의 merge_mask_to_rgba와 동일)
+            mask_uint8 = mask.astype(np.uint8) * 255
+            mask_channel = mask_uint8[..., None] if mask_uint8.ndim == 2 else mask_uint8
+            rgba_image = np.concatenate([frame[..., :3], mask_channel], axis=-1)
+
             # Run SAM 3D inference with autocast for FP16 if enabled
+            # pipeline.run을 직접 호출하여 파라미터 전달
             if self.enable_fp16 and torch.cuda.is_available():
                 print(f"   Using FP16 mixed precision")
                 with torch.cuda.amp.autocast():
-                    output = self.inference_model(frame, mask, seed=seed)
+                    output = self.inference_model._pipeline.run(
+                        rgba_image,
+                        None,
+                        seed=seed,
+                        stage1_only=False,
+                        with_mesh_postprocess=with_postprocess,
+                        with_texture_baking=with_texture,
+                        with_layout_postprocess=True,
+                        use_vertex_color=use_vertex_color,
+                        stage1_inference_steps=stage1_steps if stage1_steps != 25 else None,
+                        stage2_inference_steps=stage2_steps if stage2_steps != 25 else None,
+                    )
             else:
-                output = self.inference_model(frame, mask, seed=seed)
+                output = self.inference_model._pipeline.run(
+                    rgba_image,
+                    None,
+                    seed=seed,
+                    stage1_only=False,
+                    with_mesh_postprocess=with_postprocess,
+                    with_texture_baking=with_texture,
+                    with_layout_postprocess=True,
+                    use_vertex_color=use_vertex_color,
+                    stage1_inference_steps=stage1_steps if stage1_steps != 25 else None,
+                    stage2_inference_steps=stage2_steps if stage2_steps != 25 else None,
+                )
 
             print(f"   ✓ Inference 완료")
             print(f"   Output keys: {output.keys() if output else 'None'}")
