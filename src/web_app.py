@@ -1944,8 +1944,13 @@ class SAMInteractiveWebApp:
             preview_dir = Path(self.default_output_dir) / "previews"
             preview_dir.mkdir(parents=True, exist_ok=True)
 
-            video_name = Path(video_info['video_name']).stem
-            output_path = preview_dir / f"{video_name}_{display_mode}_preview.mp4"
+            # unique_id 사용 (m1_cam1_0 형식)으로 72개 비디오 모두 구분 가능
+            unique_id = video_info.get('unique_id')
+            if not unique_id:
+                # fallback: video_path에서 unique_id 생성
+                video_path = video_info.get('video_path', '')
+                unique_id = self._generate_unique_video_id(video_path) if video_path else Path(video_info['video_name']).stem
+            output_path = preview_dir / f"{unique_id}_{display_mode}_preview.mp4"
 
             # 첫 프레임으로 크기 결정
             first_frame, _ = self.get_video_frame_for_preview(video_idx, 0, display_mode)
@@ -1963,7 +1968,7 @@ class SAMInteractiveWebApp:
             out = cv2.VideoWriter(str(output_path), fourcc, fps, (new_w, new_h))
 
             if progress:
-                progress(0, desc=f"🎬 프리뷰 생성 중: {video_name}")
+                progress(0, desc=f"🎬 프리뷰 생성 중: {unique_id}")
 
             for i, frame_dir in enumerate(frame_dirs):
                 frame, _ = self.get_video_frame_for_preview(video_idx, i, display_mode)
@@ -1974,7 +1979,7 @@ class SAMInteractiveWebApp:
                     out.write(frame_bgr)
 
                 if progress:
-                    progress((i + 1) / len(frame_dirs), desc=f"🎬 {video_name}: {i+1}/{len(frame_dirs)}")
+                    progress((i + 1) / len(frame_dirs), desc=f"🎬 {unique_id}: {i+1}/{len(frame_dirs)}")
 
             out.release()
 
@@ -1984,7 +1989,7 @@ class SAMInteractiveWebApp:
             status = f"""
 ### 🎬 프리뷰 영상 생성 완료 ✅
 
-- **비디오**: {video_info['video_name']}
+- **비디오**: {unique_id} ({video_info['video_name']})
 - **모드**: {display_mode}
 - **프레임 수**: {len(frame_dirs)}
 - **FPS**: {fps}
@@ -2280,6 +2285,15 @@ class SAMInteractiveWebApp:
             # per_video_annotations 수 확인
             per_video_count = len(self.per_video_annotations) if hasattr(self, 'per_video_annotations') else 0
 
+            # 비디오 목록을 접을 수 있게 구성
+            video_list_items = []
+            for video_result in video_results:
+                video_path = video_result.get('video_path', '')
+                unique_id = self._generate_unique_video_id(video_path) if video_path else video_result['video_name']
+                video_list_items.append(f"- **{unique_id}**: {video_result['frames']} 프레임")
+
+            video_list_str = "\n".join(video_list_items)
+
             status = f"""
 ### 📂 Batch 세션 로드 완료 ✅
 
@@ -2290,12 +2304,12 @@ class SAMInteractiveWebApp:
 - **목표 프레임 수**: {metadata['target_frames']} (각 비디오당)
 - **비디오별 Annotation**: {per_video_count}개 복원됨
 
-### 로드된 비디오:
-"""
-            for video_result in video_results:
-                status += f"\n- **{video_result['video_name']}**: {video_result['frames']} 프레임"
+<details>
+<summary><b>📋 로드된 비디오 목록 ({len(video_results)}개) - 클릭하여 펼치기/접기</b></summary>
 
-            status += """
+{video_list_str}
+
+</details>
 
 ### 다음 단계:
 - **Export to Fauna** 클릭하여 통합 데이터셋 생성
@@ -6280,23 +6294,30 @@ dataset:
                         results = []
 
                         for i, video_info in enumerate(video_list):
-                            progress(i / len(video_list), desc=f"🎬 {video_info['video_name']} 생성 중...")
+                            # unique_id 사용 (m1_cam1_0 형식)
+                            unique_id = video_info.get('unique_id', video_info['video_name'])
+                            progress(i / len(video_list), desc=f"🎬 {unique_id} 생성 중... ({i+1}/{len(video_list)})")
                             video_path, status = self.generate_preview_video(
                                 video_info['video_idx'], display_mode, int(fps), scale
                             )
                             if video_path:
                                 last_video_path = video_path
-                                results.append(video_info['video_name'])
+                                results.append(unique_id)
 
                         progress(1.0, desc="✅ 완료!")
 
                         status = f"""
 ### 📦 전체 프리뷰 생성 완료 ✅
 
-- **생성된 비디오**: {len(results)}개
+- **생성된 비디오**: {len(results)}개 / {len(video_list)}개
 - **저장 위치**: `{Path(self.default_output_dir) / 'previews'}`
 
+<details>
+<summary><b>📋 생성된 프리뷰 목록 ({len(results)}개) - 클릭하여 펼치기</b></summary>
+
 {chr(10).join([f'- {r}' for r in results])}
+
+</details>
 """
                         return last_video_path, status
 
