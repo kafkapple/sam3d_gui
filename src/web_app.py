@@ -3551,6 +3551,18 @@ meshlab {exported_files[0] if exported_files else output_path}
 
         try:
             progress(0.5, desc="3D 재구성 중...")
+
+            # 세션 폴더 내부에 저장 (있으면), 없으면 기본 경로
+            output_dir = self._get_session_mesh_dir()
+            timestamp = datetime.now().strftime("%H%M%S")
+
+            # Texture baking 시 views 저장 경로 설정
+            if mesh_settings.get('with_texture_baking', False):
+                views_dir = output_dir / f"{unique_id}_frame{frame_idx:04d}_{timestamp}_views"
+                views_dir.mkdir(parents=True, exist_ok=True)
+                mesh_settings['save_rendered_views'] = str(views_dir)
+                logger.info(f"Texture views will be saved to: {views_dir}")
+
             reconstruction = self.processor.reconstruct_3d(
                 frame, mask,
                 seed=mesh_settings['seed'],
@@ -3558,10 +3570,6 @@ meshlab {exported_files[0] if exported_files else output_path}
             )
 
             if reconstruction:
-                # 세션 폴더 내부에 저장 (있으면), 없으면 기본 경로
-                output_dir = self._get_session_mesh_dir()
-
-                timestamp = datetime.now().strftime("%H%M%S")
                 filename = f"{unique_id}_frame{frame_idx:04d}_{timestamp}.ply"
                 output_path = output_dir / filename
 

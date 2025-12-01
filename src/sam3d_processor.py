@@ -623,6 +623,9 @@ class SAM3DProcessor:
 
             # Run SAM 3D inference with autocast for FP16 if enabled
             # pipeline.run을 직접 호출하여 파라미터 전달
+            # Get save_rendered_views path from mesh_settings
+            save_rendered_views = mesh_settings.get('save_rendered_views', None)
+
             pipeline_kwargs = {
                 "seed": seed,
                 "stage1_only": False,
@@ -633,6 +636,7 @@ class SAM3DProcessor:
                 "texture_size": texture_size,
                 "texture_nviews": texture_nviews,
                 "texture_render_resolution": texture_render_resolution,
+                "save_rendered_views": save_rendered_views,
             }
             # Only pass steps if not default
             if stage1_steps != 25:
