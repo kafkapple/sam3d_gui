@@ -190,13 +190,19 @@ def render_mesh_view(
     Returns:
         True if successful
     """
+    # Resolve actual mesh path
+    actual_path = resolve_mesh_path(mesh_path)
+    if actual_path is None:
+        print(f"Render error: mesh file not found: {mesh_path}")
+        return False
+
     if not HAS_PYRENDER or not HAS_TRIMESH:
         # Fallback: save a placeholder or use OpenCV-based simple render
-        return _render_mesh_simple(mesh_path, output_path, resolution)
+        return _render_mesh_simple(actual_path, output_path, resolution)
 
     try:
         # Load mesh
-        mesh = trimesh.load(mesh_path)
+        mesh = trimesh.load(actual_path)
 
         # Create pyrender mesh
         if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'vertex_colors'):
