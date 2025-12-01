@@ -8207,12 +8207,28 @@ dataset:
                                     )
 
                                     if reconstruction:
-                                        mesh_path = sequence_dir / f"mesh_{frame_idx:04d}.ply"
-                                        self.processor.export_mesh(reconstruction, str(mesh_path), format='ply')
-                                        generated_meshes.append({
-                                            'frame_idx': frame_idx,
-                                            'mesh_path': str(mesh_path)
-                                        })
+                                        mesh_base = sequence_dir / f"mesh_{frame_idx:04d}"
+                                        self.processor.export_mesh(reconstruction, str(mesh_base), format='ply')
+
+                                        # Find actual exported file (export_mesh may add suffix like _mesh.ply)
+                                        possible_paths = [
+                                            sequence_dir / f"mesh_{frame_idx:04d}.ply",
+                                            sequence_dir / f"mesh_{frame_idx:04d}_mesh.ply",
+                                            sequence_dir / f"mesh_{frame_idx:04d}.obj",
+                                        ]
+                                        actual_path = None
+                                        for p in possible_paths:
+                                            if p.exists():
+                                                actual_path = p
+                                                break
+
+                                        if actual_path:
+                                            generated_meshes.append({
+                                                'frame_idx': frame_idx,
+                                                'mesh_path': str(actual_path)
+                                            })
+                                        else:
+                                            failed.append(f"Frame {frame_idx}: mesh file not found after export")
 
                                         # Explicitly delete reconstruction object
                                         del reconstruction
@@ -8281,7 +8297,7 @@ dataset:
                             if not sequence_dir:
                                 return None, "❌ No mesh sequence generated yet"
 
-                            from mesh_sequence import MeshSequenceGenerator, render_mesh_sequence_video, MeshSequence, MeshFrame
+                            from mesh_sequence import render_mesh_sequence_video, MeshSequence, MeshFrame
 
                             # Load sequence
                             metadata_path = Path(sequence_dir) / "sequence_metadata.json"
@@ -8294,15 +8310,29 @@ dataset:
                                 output_dir=sequence_dir
                             )
 
+                            # Find actual mesh files (handle _mesh.ply suffix)
                             for frame_data in metadata.get('frames', []):
-                                mesh_frame = MeshFrame(
-                                    frame_idx=frame_data['frame_idx'],
-                                    mesh_path=frame_data['mesh_path']
-                                )
-                                sequence.frames.append(mesh_frame)
+                                recorded_path = Path(frame_data['mesh_path'])
+                                actual_path = None
+
+                                # Try recorded path first
+                                if recorded_path.exists():
+                                    actual_path = recorded_path
+                                else:
+                                    # Try with _mesh suffix
+                                    alt_path = recorded_path.parent / f"{recorded_path.stem}_mesh{recorded_path.suffix}"
+                                    if alt_path.exists():
+                                        actual_path = alt_path
+
+                                if actual_path:
+                                    mesh_frame = MeshFrame(
+                                        frame_idx=frame_data['frame_idx'],
+                                        mesh_path=str(actual_path)
+                                    )
+                                    sequence.frames.append(mesh_frame)
 
                             if not sequence.frames:
-                                return None, "❌ No meshes in sequence"
+                                return None, "❌ No meshes found in sequence"
 
                             # Render video
                             video_path = Path(sequence_dir) / "sequence_video.mp4"
@@ -8321,7 +8351,7 @@ dataset:
                             if success and video_path.exists():
                                 return str(video_path), f"✅ Video saved: {video_path}"
                             else:
-                                return None, "❌ Video rendering failed"
+                                return None, "❌ Video rendering failed (check terminal for details)"
 
                         except Exception as e:
                             import traceback
@@ -8334,28 +8364,68 @@ dataset:
                             if not sequence_dir:
                                 return "❌ No mesh sequence generated yet"
 
-                            from mesh_sequence import MeshSequenceGenerator, export_mesh_sequence_obj, generate_blender_import_script, MeshSequence, MeshFrame
+                            from mesh_sequence import export_mesh_sequence_obj, generate_blender_import_script, MeshSequence, MeshFrame
 
                             # Load sequence
-                            metadata_path = Path(sequence_dir) / "sequence_metadata.json"
+                            sequence_dir_path = Path(sequence_dir)
+                            metadata_path = sequence_dir_path / "sequence_metadata.json"
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
 
                             sequence = MeshSequence(
                                 name=metadata['name'],
                                 fps=metadata.get('fps', 30.0),
-                                output_dir=sequence_dir
+                                output_dir=str(sequence_dir_path)
                             )
 
+                            # Find actual mesh files (handle _mesh.ply suffix)
                             for frame_data in metadata.get('frames', []):
-                                mesh_frame = MeshFrame(
-                                    frame_idx=frame_data['frame_idx'],
-                                    mesh_path=frame_data['mesh_path']
-                                )
-                                sequence.frames.append(mesh_frame)
+                                recorded_path = Path(frame_data['mesh_path'])
+
+                                # Convert to relative path within sequence_dir if absolute
+                                if recorded_path.is_absolute():
+                                    # Extract filename and look in sequence_dir
+                                    filename = recorded_path.name
+                                    actual_path = sequence_dir_path / filename
+                                else:
+                                    actual_path = recorded_path
+
+                                # Try to find the file
+                                if not actual_path.exists():
+                                    # Try with _mesh suffix
+                                    stem = actual_path.stem.replace('_mesh', '')
+                                    alt_paths = [
+                                        sequence_dir_path / f"{stem}_mesh.ply",
+                                        sequence_dir_path / f"{stem}.ply",
+                                        sequence_dir_path / actual_path.name,
+                                    ]
+                                    for alt in alt_paths:
+                                        if alt.exists():
+                                            actual_path = alt
+                                            break
+
+                                if actual_path.exists():
+                                    mesh_frame = MeshFrame(
+                                        frame_idx=frame_data['frame_idx'],
+                                        mesh_path=str(actual_path)
+                                    )
+                                    sequence.frames.append(mesh_frame)
+
+                            if not sequence.frames:
+                                # Try auto-detect from directory
+                                ply_files = sorted(sequence_dir_path.glob("*.ply"))
+                                for i, ply_file in enumerate(ply_files):
+                                    mesh_frame = MeshFrame(
+                                        frame_idx=i,
+                                        mesh_path=str(ply_file)
+                                    )
+                                    sequence.frames.append(mesh_frame)
+
+                            if not sequence.frames:
+                                return f"❌ No mesh files found in {sequence_dir}"
 
                             # Export OBJ sequence
-                            blender_dir = Path(sequence_dir) / "blender_export"
+                            blender_dir = sequence_dir_path / "blender_export"
                             obj_dir = export_mesh_sequence_obj(sequence, str(blender_dir / "obj_sequence"))
 
                             # Generate import script
@@ -8368,7 +8438,7 @@ dataset:
 **Output Directory:** {blender_dir}
 
 **Files:**
-- `obj_sequence/`: OBJ mesh files (one per frame)
+- `obj_sequence/`: OBJ mesh files ({len(sequence.frames)} frames)
 - `import_to_blender.py`: Blender import script
 
 **Usage in Blender:**
