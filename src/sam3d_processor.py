@@ -591,8 +591,14 @@ class SAM3DProcessor:
         with_postprocess = mesh_settings.get('with_mesh_postprocess', False)
         with_texture = mesh_settings.get('with_texture_baking', False)
         use_vertex_color = mesh_settings.get('use_vertex_color', True)
+        simplify_ratio = mesh_settings.get('simplify_ratio', 0.95)
+        texture_size = mesh_settings.get('texture_size', 1024)
+        texture_nviews = mesh_settings.get('texture_nviews', 100)
+        texture_render_resolution = mesh_settings.get('texture_render_resolution', 1024)
 
         print(f"   Parameters: stage1={stage1_steps}, stage2={stage2_steps}, postprocess={with_postprocess}")
+        if with_texture:
+            print(f"   Texture baking: size={texture_size}, nviews={texture_nviews}, resolution={texture_render_resolution}")
 
         try:
             # 이미지와 마스크 병합 (Inference 클래스의 merge_mask_to_rgba와 동일)
@@ -617,33 +623,36 @@ class SAM3DProcessor:
 
             # Run SAM 3D inference with autocast for FP16 if enabled
             # pipeline.run을 직접 호출하여 파라미터 전달
+            pipeline_kwargs = {
+                "seed": seed,
+                "stage1_only": False,
+                "with_mesh_postprocess": with_postprocess,
+                "with_texture_baking": with_texture,
+                "use_vertex_color": use_vertex_color,
+                "simplify_ratio": simplify_ratio,
+                "texture_size": texture_size,
+                "texture_nviews": texture_nviews,
+                "texture_render_resolution": texture_render_resolution,
+            }
+            # Only pass steps if not default
+            if stage1_steps != 25:
+                pipeline_kwargs["stage1_inference_steps"] = stage1_steps
+            if stage2_steps != 25:
+                pipeline_kwargs["stage2_inference_steps"] = stage2_steps
+
             if self.enable_fp16 and torch.cuda.is_available():
                 print(f"   Using FP16 mixed precision")
                 with torch.cuda.amp.autocast():
                     output = self.inference_model._pipeline.run(
                         rgba_image,
                         None,
-                        seed=seed,
-                        stage1_only=False,
-                        with_mesh_postprocess=with_postprocess,
-                        with_texture_baking=with_texture,
-                        with_layout_postprocess=True,
-                        use_vertex_color=use_vertex_color,
-                        stage1_inference_steps=stage1_steps if stage1_steps != 25 else None,
-                        stage2_inference_steps=stage2_steps if stage2_steps != 25 else None,
+                        **pipeline_kwargs
                     )
             else:
                 output = self.inference_model._pipeline.run(
                     rgba_image,
                     None,
-                    seed=seed,
-                    stage1_only=False,
-                    with_mesh_postprocess=with_postprocess,
-                    with_texture_baking=with_texture,
-                    with_layout_postprocess=True,
-                    use_vertex_color=use_vertex_color,
-                    stage1_inference_steps=stage1_steps if stage1_steps != 25 else None,
-                    stage2_inference_steps=stage2_steps if stage2_steps != 25 else None,
+                    **pipeline_kwargs
                 )
 
             print(f"   ✓ Inference 완료")
@@ -687,27 +696,158 @@ class SAM3DProcessor:
         self,
         output: Dict,
         save_path: str,
-        format: str = 'ply'
+        format: str = 'ply',
+        export_type: str = 'auto'
     ):
         """
         Export 3D reconstruction to mesh file
 
-        Args:
-            output: SAM 3D output dictionary
-            save_path: Output file path
-            format: Output format ('ply', 'obj')
-        """
-        if 'gs' in output:
-            # Export Gaussian Splatting
-            ply_path = save_path if save_path.endswith('.ply') else save_path + '.ply'
-            output['gs'].save_ply(ply_path)
-            print(f"Gaussian splat saved to {ply_path}")
+        SAM3D outputs both Gaussian Splatting and actual mesh (FlexiCubes).
+        This function can export either or both.
 
-        # If mesh is available, convert and export
-        if format == 'obj' and 'gs' in output:
-            # Note: This is a placeholder - actual conversion would require
-            # more sophisticated mesh extraction from gaussian splats
-            print(f"OBJ export requires mesh extraction from gaussian splats")
+        Args:
+            output: SAM 3D output dictionary containing:
+                - 'gs': Gaussian Splatting (100K+ points with scale/rotation/opacity)
+                - 'mesh': MeshExtractResult list (vertices + faces)
+                - 'glb': trimesh object (post-processed mesh, if available)
+            save_path: Output file path (without extension)
+            format: Output format ('ply', 'glb', 'obj')
+            export_type: What to export:
+                - 'auto': Export best available (glb > mesh > gaussian)
+                - 'mesh': Export actual mesh with faces (from glb or mesh)
+                - 'gaussian': Export Gaussian Splatting PLY
+                - 'both': Export both mesh and gaussian
+
+        Returns:
+            dict: Export results with paths and statistics
+        """
+        results = {
+            'exported_files': [],
+            'mesh_stats': None,
+            'gaussian_stats': None
+        }
+
+        base_path = save_path.rsplit('.', 1)[0] if '.' in save_path else save_path
+
+        # Determine what to export
+        has_glb = 'glb' in output and output['glb'] is not None
+        has_mesh = 'mesh' in output and output['mesh'] is not None
+        has_gaussian = 'gs' in output and output['gs'] is not None
+
+        print(f"\n📦 Export 시작:")
+        print(f"   Available outputs: glb={has_glb}, mesh={has_mesh}, gaussian={has_gaussian}")
+        print(f"   Export type: {export_type}, format: {format}")
+
+        # Export actual mesh (with faces)
+        should_export_mesh = export_type in ['auto', 'mesh', 'both']
+        if should_export_mesh:
+            mesh_exported = False
+
+            # Priority 1: GLB (post-processed trimesh)
+            if has_glb:
+                glb_mesh = output['glb']
+                num_vertices = len(glb_mesh.vertices)
+                num_faces = len(glb_mesh.faces)
+
+                if num_faces > 0:
+                    if format == 'glb':
+                        mesh_path = f"{base_path}.glb"
+                        glb_mesh.export(mesh_path)
+                    elif format == 'obj':
+                        mesh_path = f"{base_path}.obj"
+                        glb_mesh.export(mesh_path)
+                    else:  # ply
+                        mesh_path = f"{base_path}_mesh.ply"
+                        glb_mesh.export(mesh_path)
+
+                    results['exported_files'].append(mesh_path)
+                    results['mesh_stats'] = {
+                        'source': 'glb',
+                        'vertices': num_vertices,
+                        'faces': num_faces
+                    }
+                    print(f"   ✅ Mesh (GLB): {mesh_path}")
+                    print(f"      Vertices: {num_vertices:,}, Faces: {num_faces:,}")
+                    mesh_exported = True
+
+            # Priority 2: Raw mesh from MeshExtractResult
+            if not mesh_exported and has_mesh:
+                mesh_result = output['mesh'][0] if isinstance(output['mesh'], list) else output['mesh']
+
+                # MeshExtractResult has vertices and faces as torch tensors
+                vertices = mesh_result.vertices.detach().cpu().numpy()
+                faces = mesh_result.faces.detach().cpu().numpy()
+                num_vertices = len(vertices)
+                num_faces = len(faces)
+
+                if num_faces > 0:
+                    import trimesh
+
+                    # Get vertex colors if available
+                    vertex_colors = None
+                    if mesh_result.vertex_attrs is not None:
+                        colors = mesh_result.vertex_attrs[:, :3].detach().cpu().numpy()
+                        # Normalize to 0-255 range
+                        colors = ((colors + 1) / 2 * 255).clip(0, 255).astype(np.uint8)
+                        vertex_colors = colors
+
+                    mesh = trimesh.Trimesh(
+                        vertices=vertices,
+                        faces=faces,
+                        vertex_colors=vertex_colors,
+                        process=False
+                    )
+
+                    if format == 'glb':
+                        mesh_path = f"{base_path}.glb"
+                    elif format == 'obj':
+                        mesh_path = f"{base_path}.obj"
+                    else:
+                        mesh_path = f"{base_path}_mesh.ply"
+
+                    mesh.export(mesh_path)
+                    results['exported_files'].append(mesh_path)
+                    results['mesh_stats'] = {
+                        'source': 'mesh_extract',
+                        'vertices': num_vertices,
+                        'faces': num_faces
+                    }
+                    print(f"   ✅ Mesh (FlexiCubes): {mesh_path}")
+                    print(f"      Vertices: {num_vertices:,}, Faces: {num_faces:,}")
+                    mesh_exported = True
+                else:
+                    print(f"   ⚠️ MeshExtractResult has 0 faces (vertices: {num_vertices})")
+
+            if not mesh_exported:
+                print(f"   ⚠️ No valid mesh available to export")
+
+        # Export Gaussian Splatting
+        should_export_gaussian = export_type in ['gaussian', 'both'] or (export_type == 'auto' and not results['mesh_stats'])
+        if should_export_gaussian and has_gaussian:
+            gs = output['gs']
+            gs_path = f"{base_path}_gaussian.ply"
+            gs.save_ply(gs_path)
+
+            # Get gaussian stats
+            num_gaussians = gs.get_xyz.shape[0]
+            results['exported_files'].append(gs_path)
+            results['gaussian_stats'] = {
+                'num_gaussians': num_gaussians,
+                'has_scale': gs._scaling is not None,
+                'has_rotation': gs._rotation is not None,
+                'has_opacity': gs._opacity is not None,
+                'has_color': gs._features_dc is not None
+            }
+            print(f"   ✅ Gaussian Splatting: {gs_path}")
+            print(f"      Gaussians: {num_gaussians:,}")
+
+        # Summary
+        if not results['exported_files']:
+            print(f"   ❌ No files exported")
+        else:
+            print(f"\n   📁 Exported {len(results['exported_files'])} file(s)")
+
+        return results
 
     def visualize_mask_overlay(
         self,

@@ -115,15 +115,10 @@ class SAMInteractiveWebApp:
     """
     SAM 3D GUI - 통합 웹 인터페이스
 
-    모드 1: 대화형 Annotation (Interactive Mode)
-    - Point annotation (foreground/background)
-    - 수동 세그멘테이션 → Propagation → 결과
-
-    모드 2: 일괄 처리 (Batch Mode)
+    Batch Mode (통합된 메인 기능)
     - 다중 비디오 일괄 처리, 세션 관리
-
-    모드 3: Lite Annotator
-    - 효율적 단일 프레임 annotation
+    - Point annotation (foreground/background)
+    - Propagation → 3D Mesh 생성 → Export
     """
 
     # SAM2 체크포인트 기본 경로
@@ -141,7 +136,7 @@ class SAMInteractiveWebApp:
         else:
             self.processor = SAM3DProcessor()
 
-        # SAM2 predictor 초기화 (Interactive Mode용)
+        # SAM2 predictor 초기화
         self.sam2_predictor = None
         self.sam2_video_predictor = None
         self.sam2_device = None
@@ -2691,7 +2686,7 @@ class SAMInteractiveWebApp:
 2. **Background Point** 클릭하여 배경 위치 지정 (선택사항)
 3. **Segment Current Frame** 클릭하여 현재 프레임 세그멘테이션
 4. **Propagate to All Frames** 클릭하여 전체 비디오 추적
-5. **Generate 3D Mesh** 클릭하여 3D 생성
+5. **3D Mesh 생성** - Batch Mode의 3D Mesh 섹션에서 생성
             """
 
             # 첫 프레임 반환 + 슬라이더 업데이트 (self.frames는 이미 RGB)
@@ -3082,8 +3077,8 @@ SAM2 체크포인트가 없습니다.
 
 ### 다음:
 - **프레임 네비게이션**으로 결과 확인 (stride 간격만 마스크 존재)
-- **Generate 3D Mesh** 클릭하여 3D 생성
-- 또는 **Save Masks** 클릭하여 마스크 저장
+- **3D Mesh 생성** - 결과 시각화 섹션에서 생성 가능
+- **Save Session** 또는 **Export to Fauna**로 결과 저장
 """
 
             return result, status
@@ -3335,9 +3330,15 @@ SAM2 체크포인트가 없습니다.
                     output_path = output_dir / filename
 
                     logger.info(f"✓ Mesh 저장 중: {output_path}")
-                    self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+                    export_result = self.processor.export_mesh(
+                        reconstruction,
+                        str(output_path),
+                        format='ply',
+                        export_type='both'  # Export both mesh and gaussian
+                    )
                     logger.info(f"✓ Mesh 저장 완료")
                     logger.debug(f"   Output keys: {reconstruction.keys() if isinstance(reconstruction, dict) else 'N/A'}")
+                    logger.debug(f"   Export result: {export_result}")
 
                     # 설정 파일 저장
                     settings_filename = f"mesh_frame{frame_idx:04d}_{timestamp}_settings.json"
@@ -3352,7 +3353,8 @@ SAM2 체크포인트가 없습니다.
                         "parameters": mesh_settings,
                         "output": {
                             "filename": filename,
-                            "format": "ply"
+                            "format": "ply",
+                            "export_result": export_result
                         }
                     }
                     with open(settings_path, 'w', encoding='utf-8') as f:
@@ -3361,12 +3363,25 @@ SAM2 체크포인트가 없습니다.
 
                     progress(1.0, desc="완료!")
 
+                    # Build status message with export details
+                    mesh_info = ""
+                    if export_result.get('mesh_stats'):
+                        ms = export_result['mesh_stats']
+                        mesh_info = f"\n**Mesh (faces 포함):**\n- Vertices: {ms['vertices']:,}\n- Faces: {ms['faces']:,}\n- Source: {ms['source']}"
+                    if export_result.get('gaussian_stats'):
+                        gs = export_result['gaussian_stats']
+                        mesh_info += f"\n\n**Gaussian Splatting:**\n- Gaussians: {gs['num_gaussians']:,}"
+
+                    exported_files = export_result.get('exported_files', [])
+                    files_list = "\n".join([f"- `{f}`" for f in exported_files])
+
                     status = f"""
 ### 3D Mesh 생성 완료 ✅
 
 - **프레임**: {frame_idx + 1} / {len(self.frames)}
-- **저장 위치**: `{output_path}`
-- **설정 파일**: `{settings_path}`
+- **출력 파일**:
+{files_list}
+{mesh_info}
 
 **파라미터:**
 - Seed: {mesh_settings['seed']}
@@ -3375,7 +3390,7 @@ SAM2 체크포인트가 없습니다.
 
 ### 3D 뷰어로 확인:
 ```bash
-meshlab {output_path}
+meshlab {exported_files[0] if exported_files else output_path}
 ```
 
 또는 온라인: https://3dviewer.net/
@@ -3421,10 +3436,16 @@ meshlab {output_path}
         with_texture_baking: bool = False,
         texture_size: int = 1024,
         use_vertex_color: bool = True,
+        texture_nviews: int = 50,
+        texture_render_resolution: int = 512,
         progress=gr.Progress()
     ) -> Tuple[str, str]:
         """
         Batch mode: 현재 선택된 비디오/프레임의 3D Mesh 생성
+
+        Args:
+            texture_nviews: Texture baking용 렌더링 뷰 수 (기본 50, 범위 16-100)
+            texture_render_resolution: Texture baking용 렌더링 해상도 (기본 512)
         """
         from datetime import datetime
         import json
@@ -3438,6 +3459,8 @@ meshlab {output_path}
             "simplify_ratio": float(simplify_ratio),
             "with_texture_baking": with_texture_baking,
             "texture_size": int(texture_size),
+            "texture_nviews": int(texture_nviews),
+            "texture_render_resolution": int(texture_render_resolution),
             "use_vertex_color": use_vertex_color
         }
 
@@ -3534,7 +3557,12 @@ meshlab {output_path}
                 filename = f"{unique_id}_frame{frame_idx:04d}_{timestamp}.ply"
                 output_path = output_dir / filename
 
-                self.processor.export_mesh(reconstruction, str(output_path), format='ply')
+                export_result = self.processor.export_mesh(
+                    reconstruction,
+                    str(output_path),
+                    format='ply',
+                    export_type='both'  # Export both mesh and gaussian
+                )
                 logger.info(f"Mesh 저장 완료: {output_path}")
 
                 # 설정 파일 저장
@@ -3553,7 +3581,8 @@ meshlab {output_path}
                     "parameters": mesh_settings,
                     "output": {
                         "filename": filename,
-                        "format": "ply"
+                        "format": "ply",
+                        "export_result": export_result
                     }
                 }
                 with open(settings_path, 'w', encoding='utf-8') as f:
@@ -3575,20 +3604,32 @@ meshlab {output_path}
                 progress(1.0, desc="완료!")
                 self.reload_sam2_models()
 
+                # Build status with export details
+                mesh_info = ""
+                if export_result.get('mesh_stats'):
+                    ms = export_result['mesh_stats']
+                    mesh_info = f"\n**Mesh (faces 포함):**\n- Vertices: {ms['vertices']:,}\n- Faces: {ms['faces']:,}"
+                if export_result.get('gaussian_stats'):
+                    gs = export_result['gaussian_stats']
+                    mesh_info += f"\n\n**Gaussian Splatting:**\n- Gaussians: {gs['num_gaussians']:,}"
+
+                exported_files = export_result.get('exported_files', [])
+                files_list = "\n".join([f"- `{f}`" for f in exported_files])
+
                 status = f"""### 3D Mesh 생성 완료 ✅
 
 - **비디오**: {video_name}
 - **프레임**: {frame_idx + 1}
-- **저장 위치**: `{output_path}`
-- **설정 파일**: `{settings_path}`
-- **세션 메타데이터**: 자동 업데이트됨
+- **출력 파일**:
+{files_list}
+{mesh_info}
 
 **파라미터:**
 - Seed: {mesh_settings['seed']}
 - Steps: {mesh_settings['stage1_inference_steps']}/{mesh_settings['stage2_inference_steps']}
 - 후처리: {'✓' if mesh_settings['with_mesh_postprocess'] else '✗'}
 """
-                return str(output_path), status
+                return str(exported_files[0] if exported_files else output_path), status
             else:
                 self.reload_sam2_models()
                 return None, "3D 재구성 실패"
@@ -5113,8 +5154,7 @@ dataset:
             # 🎬 SAM 3D GUI - 통합 웹 인터페이스
 
             **작업 모드:**
-            - 🎨 **Interactive Mode**: 단일 비디오 수동 annotation & propagation
-            - 📦 **Batch Mode**: 다중 비디오 일괄 처리 및 세션 관리
+            - 📦 **Batch Mode**: 다중 비디오 일괄 처리, annotation, propagation, 3D Mesh 생성
             - 📝 **Lite Annotator**: 효율적 단일 프레임 annotation
             """)
 
@@ -5183,476 +5223,11 @@ dataset:
                 outputs=[sam2_status, sam2_progress_text]
             )
 
-            # 비디오 자동 스캔 (Interactive Mode용)
-            initial_videos = self.scan_videos(self.default_data_dir)
-            initial_video = initial_videos[0] if initial_videos else None
-
             # 세션 자동 스캔
             initial_sessions = self.get_session_ids()
 
             with gr.Tabs():
-                # ===== Tab 1: Interactive Mode (기본) =====
-                with gr.Tab("🎨 Interactive Mode"):
-                    gr.Markdown("### 대화형 Annotation & Propagation")
-
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            gr.Markdown("### 📁 비디오 로드")
-
-                            data_dir = gr.Textbox(
-                                label="데이터 디렉토리",
-                                value=self.default_data_dir
-                            )
-
-                            scan_video_btn = gr.Button("📂 비디오 스캔")
-
-                            video_file = gr.Dropdown(
-                                label="비디오 파일",
-                                choices=initial_videos,
-                                value=initial_video,
-                                interactive=True
-                            )
-
-                            with gr.Row():
-                                start_time = gr.Number(label="시작 (초)", value=0.0, minimum=0)
-                                duration = gr.Number(label="길이 (초)", value=3.0, minimum=0.1)
-
-                            load_btn = gr.Button("📹 비디오 로드", variant="primary")
-
-                            gr.Markdown("### 🎯 Annotation")
-
-                            annotation_mode = gr.Radio(
-                                label="Point 타입",
-                                choices=["foreground", "background"],
-                                value="foreground"
-                            )
-
-                            clear_btn = gr.Button("🗑️ Points 초기화")
-                            clear_all_btn = gr.Button("🔄 All Annotations 초기화", variant="stop")
-                            segment_btn = gr.Button("✂️ Segment Current Frame", variant="secondary")
-
-                            gr.Markdown("### 🎬 Propagation")
-
-                            with gr.Row():
-                                target_frames = gr.Number(
-                                    label="목표 프레임 수",
-                                    value=300,
-                                    minimum=10,
-                                    maximum=1000,
-                                    step=10,
-                                    info="처리할 총 프레임 수 (Stride 자동 계산)"
-                                )
-                                auto_stride = gr.Number(
-                                    label="자동 Stride",
-                                    value=10,
-                                    interactive=False,
-                                    info="목표 프레임 수 기반 자동 계산"
-                                )
-
-                            propagate_btn = gr.Button("🔄 Propagate to All Frames", variant="primary")
-
-                            gr.Markdown("### 🎞️ 프레임 네비게이션")
-
-                            # 프레임 프로그레스 바 (직접 이동 가능)
-                            frame_slider = gr.Slider(
-                                label="프레임 위치",
-                                minimum=0,
-                                maximum=100,
-                                value=0,
-                                step=1,
-                                interactive=True,
-                                info="슬라이더를 드래그하여 프레임 이동"
-                            )
-
-                            with gr.Row():
-                                first_btn = gr.Button("⏮️ 처음", size="sm")
-                                prev_btn = gr.Button("◀️ 이전", size="sm")
-                                next_btn = gr.Button("▶️ 다음", size="sm")
-                                last_btn = gr.Button("⏭️ 마지막", size="sm")
-
-                            with gr.Row():
-                                frame_step = gr.Slider(
-                                    label="이동 간격 (Stride)",
-                                    minimum=1,
-                                    maximum=100,
-                                    value=1,
-                                    step=1,
-                                    info="Propagate 시에도 이 간격으로 처리됩니다"
-                                )
-
-                            with gr.Row():
-                                goto_frame = gr.Number(
-                                    label="프레임 번호",
-                                    value=1,
-                                    minimum=1,
-                                    step=1,
-                                    scale=2
-                                )
-                                goto_btn = gr.Button("이동", scale=1)
-
-                            gr.Markdown("### 💾 세션 관리")
-
-                            gr.Markdown("**세션 로드**")
-                            with gr.Row():
-                                session_refresh_btn = gr.Button("🔄 목록 새로고침", size="sm")
-
-                            session_id_dropdown = gr.Dropdown(
-                                label="세션 선택",
-                                choices=initial_sessions,
-                                value=initial_sessions[0] if initial_sessions else None,
-                                interactive=True,
-                                scale=2
-                            )
-
-                            with gr.Row():
-                                load_session_btn = gr.Button("📂 로드", variant="primary", scale=1)
-                                delete_session_btn = gr.Button("🗑️ 삭제", variant="stop", scale=1)
-
-                            with gr.Accordion("✏️ 세션 이름 변경", open=False):
-                                rename_session_input = gr.Textbox(
-                                    label="새 이름",
-                                    placeholder="새 세션 이름 입력",
-                                    info="선택한 세션의 이름을 변경합니다"
-                                )
-                                rename_session_btn = gr.Button("✏️ 이름 변경", size="sm")
-
-                            gr.Markdown("### 💾 세션 저장")
-
-                            session_name_input = gr.Textbox(
-                                label="세션 이름 (새로 저장 시)",
-                                placeholder="예: mouse_experiment_1",
-                                info="새로 저장 시에만 사용 (비어있으면 timestamp)"
-                            )
-
-                            with gr.Row():
-                                save_session_btn = gr.Button("💾 저장", variant="secondary", scale=1)
-                                save_session_new_btn = gr.Button("📝 새로 저장", variant="secondary", scale=1)
-
-                            gr.Markdown("### 🎲 3D Mesh 설정")
-
-                            with gr.Accordion("⚙️ Mesh 파라미터", open=False):
-                                mesh_seed = gr.Number(
-                                    label="Seed (재현성)",
-                                    value=42,
-                                    precision=0,
-                                    info="동일 seed = 동일 결과"
-                                )
-                                with gr.Row():
-                                    mesh_stage1_steps = gr.Slider(
-                                        label="Stage1 Steps",
-                                        minimum=5,
-                                        maximum=50,
-                                        value=25,
-                                        step=5,
-                                        info="Sparse structure 품질"
-                                    )
-                                    mesh_stage2_steps = gr.Slider(
-                                        label="Stage2 Steps",
-                                        minimum=5,
-                                        maximum=50,
-                                        value=25,
-                                        step=5,
-                                        info="Latent feature 품질"
-                                    )
-                                mesh_postprocess = gr.Checkbox(
-                                    label="Mesh 후처리 (단순화, 홀 채우기)",
-                                    value=False,
-                                    info="활성화 시 처리 시간 증가"
-                                )
-                                mesh_simplify_ratio = gr.Slider(
-                                    label="Simplify Ratio",
-                                    minimum=0.5,
-                                    maximum=0.99,
-                                    value=0.95,
-                                    step=0.05,
-                                    info="Face 유지 비율 (0.95 = 5% 제거)",
-                                    visible=False
-                                )
-                                mesh_texture_baking = gr.Checkbox(
-                                    label="Texture Baking",
-                                    value=False,
-                                    info="텍스처 맵 생성 (추가 시간 필요)"
-                                )
-                                mesh_texture_size = gr.Dropdown(
-                                    label="Texture Size",
-                                    choices=[512, 1024, 2048],
-                                    value=1024,
-                                    visible=False
-                                )
-                                mesh_vertex_color = gr.Checkbox(
-                                    label="Vertex Color 사용",
-                                    value=True,
-                                    info="버텍스에 색상 저장"
-                                )
-
-                                # 후처리 체크박스에 따라 simplify_ratio 표시
-                                mesh_postprocess.change(
-                                    fn=lambda x: gr.update(visible=x),
-                                    inputs=[mesh_postprocess],
-                                    outputs=[mesh_simplify_ratio]
-                                )
-                                # 텍스처 베이킹 체크박스에 따라 texture_size 표시
-                                mesh_texture_baking.change(
-                                    fn=lambda x: gr.update(visible=x),
-                                    inputs=[mesh_texture_baking],
-                                    outputs=[mesh_texture_size]
-                                )
-
-                            mesh_btn = gr.Button("🎲 Generate 3D Mesh", variant="primary")
-                            save_masks_btn = gr.Button("💾 Save Masks Only")
-                            export_frames_btn = gr.Button("📤 Export Frames & Masks")
-
-                            gr.Markdown("### 🦁 Fauna 데이터셋 저장")
-
-                            with gr.Row():
-                                fauna_animal_name = gr.Textbox(
-                                    label="동물 이름",
-                                    value="mouse",
-                                    placeholder="예: mouse, cat, dog"
-                                )
-                                fauna_target_frames = gr.Number(
-                                    label="목표 프레임 수",
-                                    value=50,
-                                    minimum=10,
-                                    maximum=500,
-                                    step=10
-                                )
-
-                            export_fauna_btn = gr.Button("🐾 Fauna 형식으로 저장", variant="primary")
-
-                        # 우측: 이미지 & 결과
-                        with gr.Column(scale=2):
-                            gr.Markdown("### 🖼️ Annotation & Results")
-
-                            image_display = gr.Image(
-                                label="이미지 (클릭하여 point 추가)",
-                                type="numpy",
-                                height=500,
-                                interactive=True
-                            )
-
-                            status_text = gr.Markdown("비디오를 로드하세요")
-
-                            mesh_file = gr.File(label="3D Mesh 파일")
-
-                    # Interactive Mode 이벤트 핸들러
-                    # 비디오 파일 선택 시 duration 자동 업데이트
-                    video_file.change(
-                        fn=self.get_video_duration,
-                        inputs=[data_dir, video_file],
-                        outputs=[duration]
-                    )
-
-                    load_btn.click(
-                        fn=self.load_video,
-                        inputs=[data_dir, video_file, start_time, duration],
-                        outputs=[image_display, status_text, frame_slider]
-                    )
-
-                    # 슬라이더로 프레임 이동
-                    frame_slider.change(
-                        fn=lambda frame_idx: self.navigate_frame("goto", int(frame_idx)),
-                        inputs=[frame_slider],
-                        outputs=[image_display, status_text]
-                    )
-
-                    # 이미지 클릭 시 point 추가
-                    def handle_click(mode, evt: gr.SelectData):
-                        """이미지 클릭 핸들러 - img 파라미터 제거"""
-                        if len(self.frames) == 0:
-                            return None, "먼저 비디오를 로드하세요"
-
-                        # 클릭 좌표
-                        x, y = evt.index[0], evt.index[1]
-
-                        # Point 추가
-                        self.annotations[mode].append((x, y))
-
-                        # 현재 프레임에 point 표시
-                        frame = self.frames[self.current_frame_idx].copy()
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                        # Foreground points (녹색)
-                        for px, py in self.annotations['foreground']:
-                            cv2.circle(frame_rgb, (px, py), 5, (0, 255, 0), -1)
-                            cv2.circle(frame_rgb, (px, py), 7, (255, 255, 255), 2)
-
-                        # Background points (빨간색)
-                        for px, py in self.annotations['background']:
-                            cv2.circle(frame_rgb, (px, py), 5, (255, 0, 0), -1)
-                            cv2.circle(frame_rgb, (px, py), 7, (255, 255, 255), 2)
-
-                        status = f"""
-**Annotations:**
-- Foreground: {len(self.annotations['foreground'])} points
-- Background: {len(self.annotations['background'])} points
-
-클릭한 위치: ({x}, {y}) - {mode}
-"""
-
-                        return frame_rgb, status
-
-                    image_display.select(
-                        fn=handle_click,
-                        inputs=[annotation_mode],
-                        outputs=[image_display, status_text]
-                    )
-
-                    segment_btn.click(
-                        fn=self.segment_current_frame,
-                        outputs=[image_display, status_text]
-                    )
-
-                    # 목표 프레임 수 변경 시 auto_stride 자동 계산
-                    target_frames.change(
-                        fn=self.calculate_stride_from_target,
-                        inputs=[target_frames],
-                        outputs=[auto_stride]
-                    )
-
-                    propagate_btn.click(
-                        fn=self.propagate_to_all_frames,
-                        inputs=[auto_stride],  # frame_step 대신 auto_stride 사용
-                        outputs=[image_display, status_text]
-                    )
-
-                    # 저장 (기존 세션 덮어쓰기)
-                    save_session_btn.click(
-                        fn=lambda: self.save_annotation_session(save_as_new=False),
-                        outputs=[status_text]
-                    )
-
-                    # 새로 저장 (새 세션 생성)
-                    save_session_new_btn.click(
-                        fn=lambda name: self.save_annotation_session(session_name=name, save_as_new=True),
-                        inputs=[session_name_input],
-                        outputs=[status_text]
-                    )
-
-                    mesh_btn.click(
-                        fn=self.generate_3d_mesh,
-                        inputs=[
-                            mesh_seed,
-                            mesh_stage1_steps,
-                            mesh_stage2_steps,
-                            mesh_postprocess,
-                            mesh_simplify_ratio,
-                            mesh_texture_baking,
-                            mesh_texture_size,
-                            mesh_vertex_color
-                        ],
-                        outputs=[mesh_file, status_text]
-                    )
-
-                    save_masks_btn.click(
-                        fn=self.save_masks,
-                        outputs=[status_text]
-                    )
-
-                    export_frames_btn.click(
-                        fn=self.export_frames_and_masks,
-                        outputs=[status_text]
-                    )
-
-                    export_fauna_btn.click(
-                        fn=self.export_fauna_dataset,
-                        inputs=[fauna_animal_name, fauna_target_frames],
-                        outputs=[status_text]
-                    )
-
-                    clear_all_btn.click(
-                        fn=self.clear_annotations,
-                        outputs=[image_display, status_text]
-                    )
-
-                    # 세션 관리 이벤트
-                    session_refresh_btn.click(
-                        fn=lambda: gr.Dropdown(choices=self.get_session_ids()),
-                        outputs=[session_id_dropdown]
-                    )
-
-                    # 세션 로드 핸들러 (batch/single 모두 지원)
-                    def load_session_handler(session_id):
-                        """세션 로드 - batch 세션인 경우 비디오 목록 정보도 상태에 포함"""
-                        return self.load_annotation_session(session_id)
-
-                    load_session_btn.click(
-                        fn=load_session_handler,
-                        inputs=[session_id_dropdown],
-                        outputs=[image_display, status_text]
-                    )
-
-                    # 세션 삭제
-                    def delete_session_handler(session_id):
-                        msg, sessions = self.delete_session(session_id)
-                        return msg, gr.Dropdown(choices=sessions, value=sessions[0] if sessions else None)
-
-                    delete_session_btn.click(
-                        fn=delete_session_handler,
-                        inputs=[session_id_dropdown],
-                        outputs=[status_text, session_id_dropdown]
-                    )
-
-                    # 세션 이름 변경
-                    def rename_session_handler(session_id, new_name):
-                        msg, sessions, new_id = self.rename_session(session_id, new_name)
-                        return msg, gr.Dropdown(choices=sessions, value=new_id if new_id else (sessions[0] if sessions else None)), ""
-
-                    rename_session_btn.click(
-                        fn=rename_session_handler,
-                        inputs=[session_id_dropdown, rename_session_input],
-                        outputs=[status_text, session_id_dropdown, rename_session_input]
-                    )
-
-                    def clear_points():
-                        self.annotations = {'foreground': [], 'background': []}
-                        if len(self.frames) > 0:
-                            frame_rgb = self.frames[self.current_frame_idx].copy()  # 이미 RGB
-                            return frame_rgb, "Points 초기화됨"
-                        return None, "Points 초기화됨"
-
-                    clear_btn.click(
-                        fn=clear_points,
-                        outputs=[image_display, status_text]
-                    )
-
-                    # 비디오 스캔 버튼
-                    scan_video_btn.click(
-                        fn=lambda d: gr.Dropdown(choices=self.scan_videos(d)),
-                        inputs=[data_dir],
-                        outputs=[video_file]
-                    )
-
-                    # 프레임 네비게이션 이벤트
-                    first_btn.click(
-                        fn=lambda: self.navigate_frame("first"),
-                        outputs=[image_display, status_text]
-                    )
-
-                    prev_btn.click(
-                        fn=lambda step: self.navigate_frame("prev", int(step)),
-                        inputs=[frame_step],
-                        outputs=[image_display, status_text]
-                    )
-
-                    next_btn.click(
-                        fn=lambda step: self.navigate_frame("next", int(step)),
-                        inputs=[frame_step],
-                        outputs=[image_display, status_text]
-                    )
-
-                    last_btn.click(
-                        fn=lambda: self.navigate_frame("last"),
-                        outputs=[image_display, status_text]
-                    )
-
-                    goto_btn.click(
-                        fn=lambda frame_num: self.navigate_frame("goto", int(frame_num) - 1),  # 1-indexed to 0-indexed
-                        inputs=[goto_frame],
-                        outputs=[image_display, status_text]
-                    )
-
-                # ===== Tab 2: Batch Mode =====
+                # ===== Batch Mode (통합된 메인 탭) =====
                 with gr.Tab("📦 Batch Mode"):
                     gr.Markdown("### 여러 비디오 일괄 처리")
 
@@ -5701,7 +5276,6 @@ dataset:
 모든 비디오에 동일한 annotation이 적용됩니다.
                             """)
 
-                            # Interactive Mode에서 사용하는 annotation UI 재사용
                             batch_load_ref_btn = gr.Button("📹 Reference 프레임 로드")
 
                             batch_annotation_mode = gr.Radio(
@@ -5949,14 +5523,31 @@ dataset:
                                     batch_mesh_texture_baking = gr.Checkbox(
                                         label="Texture Baking",
                                         value=False,
-                                        info="텍스처 맵 생성 (추가 시간 필요)"
+                                        info="⚠️ 메모리 많이 필요 (추가 시간 + OOM 위험)"
                                     )
-                                    batch_mesh_texture_size = gr.Dropdown(
-                                        label="Texture Size",
-                                        choices=[512, 1024, 2048],
-                                        value=1024,
-                                        visible=False
-                                    )
+                                    # Texture baking 세부 옵션 (숨김)
+                                    with gr.Column(visible=False) as batch_texture_options:
+                                        gr.Markdown("⚠️ **메모리 주의**: A6000(48GB)은 높은 값 가능, RTX 3060(12GB)은 낮은 값 권장")
+                                        batch_mesh_texture_size = gr.Dropdown(
+                                            label="Texture Size",
+                                            choices=[512, 1024, 2048],
+                                            value=1024,
+                                            info="출력 텍스처 해상도 (A6000: 1024, 3060: 512)"
+                                        )
+                                        batch_mesh_texture_nviews = gr.Slider(
+                                            label="Render Views",
+                                            minimum=16,
+                                            maximum=100,
+                                            value=64,
+                                            step=8,
+                                            info="뷰 수 (A6000: 64-100, 3060: 32-50)"
+                                        )
+                                        batch_mesh_texture_resolution = gr.Dropdown(
+                                            label="Render Resolution",
+                                            choices=[256, 512, 1024],
+                                            value=512,
+                                            info="멀티뷰 렌더링 해상도 (A6000: 512-1024, 3060: 256-512)"
+                                        )
                                     batch_mesh_vertex_color = gr.Checkbox(
                                         label="Vertex Color 사용",
                                         value=True,
@@ -5969,11 +5560,11 @@ dataset:
                                         inputs=[batch_mesh_postprocess],
                                         outputs=[batch_mesh_simplify_ratio]
                                     )
-                                    # 텍스처 베이킹 체크박스에 따라 texture_size 표시
+                                    # 텍스처 베이킹 체크박스에 따라 세부 옵션 표시
                                     batch_mesh_texture_baking.change(
                                         fn=lambda x: gr.update(visible=x),
                                         inputs=[batch_mesh_texture_baking],
-                                        outputs=[batch_mesh_texture_size]
+                                        outputs=[batch_texture_options]
                                     )
 
                                 with gr.Row():
@@ -6447,14 +6038,17 @@ dataset:
 
                     # 현재 프레임 3D Mesh 생성
                     batch_gen_mesh_btn.click(
-                        fn=lambda video_idx, frame_idx, seed, s1, s2, pp, sr, tb, ts, vc: self.batch_generate_3d_mesh_current(
-                            video_idx, int(frame_idx), seed, s1, s2, pp, sr, tb, ts, vc
+                        fn=lambda video_idx, frame_idx, seed, s1, s2, pp, sr, tb, ts, nv, rr, vc: self.batch_generate_3d_mesh_current(
+                            video_idx, int(frame_idx), seed, s1, s2, pp, sr, tb, ts, vc,
+                            texture_nviews=int(nv), texture_render_resolution=int(rr)
                         ),
                         inputs=[
                             current_preview_video_idx, batch_vis_slider,
                             batch_mesh_seed, batch_mesh_stage1_steps, batch_mesh_stage2_steps,
                             batch_mesh_postprocess, batch_mesh_simplify_ratio,
-                            batch_mesh_texture_baking, batch_mesh_texture_size, batch_mesh_vertex_color
+                            batch_mesh_texture_baking, batch_mesh_texture_size,
+                            batch_mesh_texture_nviews, batch_mesh_texture_resolution,
+                            batch_mesh_vertex_color
                         ],
                         outputs=[batch_mesh_output, batch_status_text]
                     )
