@@ -60,6 +60,40 @@ class MeshSequence:
         return len(self.frames)
 
 
+def resolve_mesh_path(ply_path: str) -> Optional[str]:
+    """
+    Resolve actual mesh file path, handling _mesh.ply suffix variations.
+
+    Args:
+        ply_path: Original path (may not exist)
+
+    Returns:
+        Actual existing path or None
+    """
+    path = Path(ply_path)
+
+    # Try original path
+    if path.exists():
+        return str(path)
+
+    # Try variations
+    parent = path.parent
+    stem = path.stem.replace('_mesh', '')  # Remove _mesh if present
+
+    candidates = [
+        parent / f"{stem}_mesh.ply",
+        parent / f"{stem}.ply",
+        parent / f"{stem}_mesh.obj",
+        parent / f"{stem}.obj",
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
 def load_ply_mesh(ply_path: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
     Load PLY mesh file and return vertices, faces, and colors.
@@ -67,8 +101,13 @@ def load_ply_mesh(ply_path: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
     Returns:
         (vertices, faces, vertex_colors) - colors may be None
     """
+    # Resolve actual path
+    actual_path = resolve_mesh_path(ply_path)
+    if actual_path is None:
+        raise FileNotFoundError(f"Mesh file not found: {ply_path}")
+
     if HAS_TRIMESH:
-        mesh = trimesh.load(ply_path)
+        mesh = trimesh.load(actual_path)
         vertices = np.array(mesh.vertices)
         faces = np.array(mesh.faces) if hasattr(mesh, 'faces') else np.array([])
 
@@ -80,7 +119,7 @@ def load_ply_mesh(ply_path: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
         return vertices, faces, vertex_colors
     else:
         # Basic PLY parser fallback
-        return _parse_ply_basic(ply_path)
+        return _parse_ply_basic(actual_path)
 
 
 def _parse_ply_basic(ply_path: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
