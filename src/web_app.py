@@ -195,6 +195,11 @@ class SAMInteractiveWebApp:
         self.current_mask = None
         self.tracking_result = None
 
+        # 다중 레퍼런스 프레임 관리
+        self.multi_ref_annotations = {}  # {frame_idx: {'foreground': [...], 'background': [...]}}
+        self.ref_frame_indices = []  # 원본 비디오에서의 실제 프레임 인덱스
+        self.loaded_ref_frames = []  # 로드된 레퍼런스 프레임 이미지들
+
         # 현재 로드된 세션 경로 (덮어쓰기용)
         self.current_session_path = None
 
@@ -1045,21 +1050,26 @@ class SAMInteractiveWebApp:
             empty_checkbox = gr.CheckboxGroup(choices=[], value=[])
             return [], f"❌ 스캔 실패:\n{str(e)}\n{traceback.format_exc()}", empty_checkbox
 
-    def batch_load_reference_frame(self, selected_videos: List[str]) -> Tuple[np.ndarray, str]:
+    def batch_load_reference_frame(self, selected_videos: List[str], num_frames_to_load: int = 10) -> Tuple[np.ndarray, str, gr.Slider, gr.Button, gr.Button, gr.Markdown]:
         """
-        Batch 모드에서 선택된 비디오 중 첫 번째 비디오의 첫 프레임을 reference로 로드
+        Batch 모드에서 선택된 비디오 중 첫 번째 비디오의 여러 프레임을 reference로 로드
+
+        다중 레퍼런스 프레임 지원: 여러 프레임에 annotation을 추가하여 더 정확한 propagation 가능
 
         Args:
             selected_videos: 선택된 비디오 레이블 리스트
+            num_frames_to_load: 로드할 프레임 수 (균등 간격 추출)
 
         Returns:
-            (reference_frame, status_message)
+            (reference_frame, status_message, slider_update, add_btn_update, clear_btn_update, ref_status_update)
         """
+        empty_returns = (None, "❌ 에러", gr.Slider(visible=False), gr.Button(visible=False), gr.Button(visible=False), gr.Markdown(visible=False))
+
         if not hasattr(self, 'batch_videos') or not self.batch_videos:
-            return None, "❌ 먼저 비디오를 스캔하세요"
+            return (None, "❌ 먼저 비디오를 스캔하세요", gr.Slider(visible=False), gr.Button(visible=False), gr.Button(visible=False), gr.Markdown(visible=False))
 
         if not selected_videos or len(selected_videos) == 0:
-            return None, "❌ 최소 1개의 비디오를 선택하세요"
+            return (None, "❌ 최소 1개의 비디오를 선택하세요", gr.Slider(visible=False), gr.Button(visible=False), gr.Button(visible=False), gr.Markdown(visible=False))
 
         try:
             # 선택된 첫 번째 비디오의 실제 경로 찾기
@@ -1071,25 +1081,46 @@ class SAMInteractiveWebApp:
                 # Fallback: 전체 리스트의 첫 번째
                 first_video_path = self.batch_videos[0]
 
-            # 첫 프레임 추출
-            frames = self.processor.extract_frames(
-                first_video_path,
-                start_frame=0,
-                num_frames=1,
-                stride=1
-            )
+            # 비디오 총 프레임 수 확인
+            cap = cv2.VideoCapture(first_video_path)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
 
-            if not frames:
-                return None, "❌ Reference 프레임 추출 실패"
+            num_frames_to_load = int(num_frames_to_load)
+            num_frames_to_load = min(num_frames_to_load, total_frames)
 
-            # 프레임 저장 (annotation용)
-            self.frames = frames
+            # 균등 간격으로 프레임 인덱스 계산
+            if num_frames_to_load >= total_frames:
+                frame_indices = list(range(total_frames))
+            else:
+                frame_indices = [int(i * total_frames / num_frames_to_load) for i in range(num_frames_to_load)]
+
+            # 프레임 추출
+            self.ref_frame_indices = frame_indices
+            self.loaded_ref_frames = []
+
+            cap = cv2.VideoCapture(first_video_path)
+            for idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret:
+                    self.loaded_ref_frames.append(frame)
+            cap.release()
+
+            if not self.loaded_ref_frames:
+                return (None, "❌ Reference 프레임 추출 실패", gr.Slider(visible=False), gr.Button(visible=False), gr.Button(visible=False), gr.Markdown(visible=False))
+
+            # 프레임 저장 (annotation용) - 기존 호환성 유지
+            self.frames = self.loaded_ref_frames
             self.current_frame_idx = 0
             self.annotations = {'foreground': [], 'background': []}
-            self.masks = [None] * len(frames)
+            self.masks = [None] * len(self.loaded_ref_frames)
+
+            # 다중 레퍼런스 초기화
+            self.multi_ref_annotations = {}
 
             # RGB 변환 (Gradio는 RGB 사용)
-            frame_rgb = cv2.cvtColor(frames[0], cv2.COLOR_BGR2RGB)
+            frame_rgb = cv2.cvtColor(self.loaded_ref_frames[0], cv2.COLOR_BGR2RGB)
 
             status = f"""
 ### ✅ Reference 프레임 로드 완료
@@ -1097,16 +1128,117 @@ class SAMInteractiveWebApp:
 - **선택된 비디오**: {len(selected_videos)}개 중 첫 번째
 - **Reference 비디오**: {first_selected_label}
 - **파일명**: {Path(first_video_path).name}
+- **로드된 프레임**: {len(self.loaded_ref_frames)}개 (전체 {total_frames}개 중)
 - **해상도**: {frame_rgb.shape[1]} x {frame_rgb.shape[0]}
 
-이제 이미지를 클릭하여 annotation을 추가하세요.
+**사용법**:
+1. 슬라이더로 프레임 탐색
+2. 원하는 프레임에서 annotation 추가
+3. "➕ 현재 프레임을 레퍼런스로 추가" 클릭
+4. 여러 프레임에 반복하여 정확도 향상
 """
+            # 슬라이더 업데이트
+            slider_update = gr.Slider(
+                minimum=0,
+                maximum=len(self.loaded_ref_frames) - 1,
+                value=0,
+                step=1,
+                visible=True,
+                label=f"레퍼런스 프레임 선택 (0-{len(self.loaded_ref_frames)-1})"
+            )
 
-            return frame_rgb, status
+            ref_status = f"**등록된 레퍼런스**: 0개"
+
+            return (frame_rgb, status, slider_update, gr.Button(visible=True), gr.Button(visible=True), gr.Markdown(value=ref_status, visible=True))
 
         except Exception as e:
             import traceback
-            return None, f"❌ Reference 프레임 로드 실패:\n{str(e)}\n{traceback.format_exc()}"
+            return (None, f"❌ Reference 프레임 로드 실패:\n{str(e)}\n{traceback.format_exc()}", gr.Slider(visible=False), gr.Button(visible=False), gr.Button(visible=False), gr.Markdown(visible=False))
+
+    def batch_change_reference_frame(self, frame_idx: int) -> Tuple[np.ndarray, str]:
+        """
+        슬라이더로 선택한 레퍼런스 프레임으로 변경
+
+        Args:
+            frame_idx: 선택된 프레임 인덱스
+
+        Returns:
+            (frame_image, status_message)
+        """
+        if not hasattr(self, 'loaded_ref_frames') or not self.loaded_ref_frames:
+            return None, "❌ 먼저 프레임을 로드하세요"
+
+        frame_idx = int(frame_idx)
+        if frame_idx < 0 or frame_idx >= len(self.loaded_ref_frames):
+            return None, f"❌ 유효하지 않은 프레임 인덱스: {frame_idx}"
+
+        # 현재 프레임 인덱스 업데이트
+        self.current_frame_idx = frame_idx
+
+        # 현재 프레임에 저장된 annotation이 있으면 로드
+        if frame_idx in self.multi_ref_annotations:
+            self.annotations = {
+                'foreground': self.multi_ref_annotations[frame_idx]['foreground'].copy(),
+                'background': self.multi_ref_annotations[frame_idx]['background'].copy()
+            }
+        else:
+            # 새 프레임이면 annotation 초기화
+            self.annotations = {'foreground': [], 'background': []}
+
+        # RGB 변환
+        frame_rgb = cv2.cvtColor(self.loaded_ref_frames[frame_idx], cv2.COLOR_BGR2RGB)
+
+        # Annotation이 있으면 표시
+        frame_with_points = self.draw_annotation_points(frame_rgb.copy())
+
+        original_frame_idx = self.ref_frame_indices[frame_idx] if hasattr(self, 'ref_frame_indices') else frame_idx
+        is_ref = "✅ 레퍼런스 등록됨" if frame_idx in self.multi_ref_annotations else ""
+
+        status = f"**프레임 {frame_idx}** (원본: #{original_frame_idx}) {is_ref}"
+
+        return frame_with_points, status
+
+    def batch_add_current_as_reference(self) -> str:
+        """
+        현재 프레임의 annotation을 레퍼런스로 등록
+
+        Returns:
+            상태 메시지
+        """
+        if not hasattr(self, 'loaded_ref_frames') or not self.loaded_ref_frames:
+            return "**등록된 레퍼런스**: 0개\n❌ 먼저 프레임을 로드하세요"
+
+        if len(self.annotations['foreground']) == 0:
+            return f"**등록된 레퍼런스**: {len(self.multi_ref_annotations)}개\n❌ 최소 1개의 foreground point가 필요합니다"
+
+        # 현재 annotation을 다중 레퍼런스에 저장
+        self.multi_ref_annotations[self.current_frame_idx] = {
+            'foreground': self.annotations['foreground'].copy(),
+            'background': self.annotations['background'].copy(),
+            'original_frame_idx': self.ref_frame_indices[self.current_frame_idx] if hasattr(self, 'ref_frame_indices') else self.current_frame_idx
+        }
+
+        # 등록된 레퍼런스 목록 생성
+        ref_list = []
+        for idx in sorted(self.multi_ref_annotations.keys()):
+            orig_idx = self.multi_ref_annotations[idx].get('original_frame_idx', idx)
+            fg_count = len(self.multi_ref_annotations[idx]['foreground'])
+            bg_count = len(self.multi_ref_annotations[idx]['background'])
+            ref_list.append(f"  - 프레임 {idx} (원본 #{orig_idx}): {fg_count} fg, {bg_count} bg")
+
+        status = f"**등록된 레퍼런스**: {len(self.multi_ref_annotations)}개\n" + "\n".join(ref_list)
+        return status
+
+    def batch_clear_all_references(self) -> str:
+        """
+        모든 레퍼런스 annotation 초기화
+
+        Returns:
+            상태 메시지
+        """
+        self.multi_ref_annotations = {}
+        self.annotations = {'foreground': [], 'background': []}
+        return "**등록된 레퍼런스**: 0개\n✅ 모든 레퍼런스가 초기화되었습니다"
 
     def batch_propagate_videos(
         self,
@@ -1134,7 +1266,10 @@ class SAMInteractiveWebApp:
         if not hasattr(self, 'batch_videos') or not self.batch_videos:
             return "먼저 비디오를 스캔하세요", "❌ 비디오 없음"
 
-        if len(self.annotations['foreground']) == 0:
+        # 다중 레퍼런스가 있으면 사용, 없으면 현재 annotation 사용
+        has_multi_ref = hasattr(self, 'multi_ref_annotations') and len(self.multi_ref_annotations) > 0
+
+        if not has_multi_ref and len(self.annotations['foreground']) == 0:
             return "Annotation이 필요합니다 (최소 1개의 foreground point)", "❌ Annotation 없음"
 
         try:
@@ -1145,11 +1280,20 @@ class SAMInteractiveWebApp:
             # 임시 결과 저장 디렉토리
             batch_temp_dir = Path(tempfile.mkdtemp(prefix="sam3d_batch_"))
 
-            # Reference annotation 저장
-            reference_annotations = {
-                'foreground': self.annotations['foreground'].copy(),
-                'background': self.annotations['background'].copy()
-            }
+            # Reference annotation 저장 (다중 레퍼런스 또는 단일)
+            if has_multi_ref:
+                reference_annotations = self.multi_ref_annotations.copy()
+                print(f"✓ 다중 레퍼런스 사용: {len(reference_annotations)}개 프레임")
+            else:
+                # 기존 방식: 첫 프레임에만 적용
+                reference_annotations = {
+                    0: {
+                        'foreground': self.annotations['foreground'].copy(),
+                        'background': self.annotations['background'].copy(),
+                        'original_frame_idx': 0
+                    }
+                }
+                print("✓ 단일 레퍼런스 사용 (첫 프레임)")
 
             # 선택된 비디오 필터링 (레이블 → 경로 매핑 사용)
             if selected_videos and len(selected_videos) > 0:
@@ -1239,32 +1383,54 @@ class SAMInteractiveWebApp:
                     if self.sam2_video_predictor is not None:
                         inference_state = self.sam2_video_predictor.init_state(video_path=video_temp_dir)
 
-                        # Reference annotations 적용 (첫 프레임)
-                        point_coords = []
-                        point_labels = []
+                        # 다중 레퍼런스 프레임에 annotation 적용
+                        # reference_annotations는 {frame_idx: {'foreground': [...], 'background': [...]}} 형태
+                        total_extracted_frames = len(frames)
 
-                        for px, py in reference_annotations['foreground']:
-                            point_coords.append([px, py])
-                            point_labels.append(1)
+                        for ref_local_idx, ref_data in reference_annotations.items():
+                            # ref_local_idx: 로드된 프레임 중 인덱스
+                            # original_frame_idx: 원본 비디오의 프레임 인덱스
+                            original_frame_idx = ref_data.get('original_frame_idx', ref_local_idx)
 
-                        for px, py in reference_annotations['background']:
-                            point_coords.append([px, py])
-                            point_labels.append(0)
+                            # 현재 비디오에서 해당 프레임에 가장 가까운 추출 프레임 찾기
+                            # calculated_stride로 추출했으므로, 원본 프레임 인덱스를 추출 프레임 인덱스로 변환
+                            # target_frame_idx = original_frame_idx // calculated_stride (대략적)
+                            # 더 정확하게: frame_indices 리스트에서 가장 가까운 인덱스 찾기
+                            target_frame_idx = min(
+                                range(total_extracted_frames),
+                                key=lambda i: abs(frame_indices[i] - original_frame_idx) if i < len(frame_indices) else float('inf')
+                            )
+                            target_frame_idx = min(target_frame_idx, total_extracted_frames - 1)
 
-                        point_coords = np.array(point_coords, dtype=np.float32)
-                        point_labels = np.array(point_labels, dtype=np.int32)
+                            point_coords = []
+                            point_labels = []
 
-                        # Add points to first frame
-                        self.sam2_video_predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=0,
-                            obj_id=1,
-                            points=point_coords,
-                            labels=point_labels,
-                        )
+                            for px, py in ref_data['foreground']:
+                                point_coords.append([px, py])
+                                point_labels.append(1)
 
-                        # Propagate
+                            for px, py in ref_data['background']:
+                                point_coords.append([px, py])
+                                point_labels.append(0)
+
+                            if point_coords:
+                                point_coords = np.array(point_coords, dtype=np.float32)
+                                point_labels = np.array(point_labels, dtype=np.int32)
+
+                                # Add points to target frame
+                                self.sam2_video_predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=target_frame_idx,
+                                    obj_id=1,
+                                    points=point_coords,
+                                    labels=point_labels,
+                                )
+                                print(f"  ✓ 레퍼런스 추가: 프레임 {target_frame_idx} (원본 #{original_frame_idx}), {len(ref_data['foreground'])} fg, {len(ref_data['background'])} bg")
+
+                        # Propagate (양방향)
                         video_segments = {}
+
+                        # Forward propagation (첫 프레임부터)
                         for frame_idx, obj_ids, mask_logits in self.sam2_video_predictor.propagate_in_video(
                             inference_state,
                             start_frame_idx=0
@@ -5483,11 +5649,38 @@ dataset:
                             gr.Markdown("### 🎯 Reference Annotation")
 
                             gr.Markdown("""
-첫 번째 비디오의 대표 프레임에 annotation을 추가하세요.
-모든 비디오에 동일한 annotation이 적용됩니다.
+선택한 프레임에 annotation을 추가하세요.
+**다중 레퍼런스**: 여러 프레임에 annotation을 추가하면 더 정확한 결과를 얻을 수 있습니다.
                             """)
 
-                            batch_load_ref_btn = gr.Button("📹 Reference 프레임 로드")
+                            with gr.Row():
+                                batch_load_ref_btn = gr.Button("📹 프레임 로드", variant="primary")
+                                batch_ref_frame_count = gr.Number(
+                                    label="로드할 프레임 수",
+                                    value=10,
+                                    minimum=1,
+                                    maximum=100,
+                                    step=1,
+                                    info="탐색용 프레임 수 (균등 간격 추출)"
+                                )
+
+                            # 레퍼런스 프레임 선택 슬라이더
+                            batch_ref_frame_slider = gr.Slider(
+                                label="레퍼런스 프레임 선택",
+                                minimum=0,
+                                maximum=9,
+                                step=1,
+                                value=0,
+                                visible=False,
+                                info="annotation할 프레임을 선택하세요"
+                            )
+
+                            # 다중 레퍼런스 관리
+                            with gr.Row():
+                                batch_add_ref_btn = gr.Button("➕ 현재 프레임을 레퍼런스로 추가", size="sm", visible=False)
+                                batch_clear_refs_btn = gr.Button("🗑️ 모든 레퍼런스 초기화", size="sm", visible=False)
+
+                            batch_ref_status = gr.Markdown("", visible=False)
 
                             batch_annotation_mode = gr.Radio(
                                 label="Point 타입",
@@ -5851,11 +6044,30 @@ dataset:
                         outputs=[batch_video_count_info]
                     )
 
-                    # Reference frame 로드
+                    # Reference frame 로드 (다중 프레임 지원)
                     batch_load_ref_btn.click(
                         fn=self.batch_load_reference_frame,
-                        inputs=[batch_video_selection],
+                        inputs=[batch_video_selection, batch_ref_frame_count],
+                        outputs=[batch_image_display, batch_status_text, batch_ref_frame_slider, batch_add_ref_btn, batch_clear_refs_btn, batch_ref_status]
+                    )
+
+                    # 레퍼런스 프레임 슬라이더 변경
+                    batch_ref_frame_slider.change(
+                        fn=self.batch_change_reference_frame,
+                        inputs=[batch_ref_frame_slider],
                         outputs=[batch_image_display, batch_status_text]
+                    )
+
+                    # 현재 프레임을 레퍼런스로 추가
+                    batch_add_ref_btn.click(
+                        fn=self.batch_add_current_as_reference,
+                        outputs=[batch_ref_status]
+                    )
+
+                    # 모든 레퍼런스 초기화
+                    batch_clear_refs_btn.click(
+                        fn=self.batch_clear_all_references,
+                        outputs=[batch_ref_status]
                     )
 
                     # Batch 모드 point annotation 클릭 이벤트
@@ -5871,12 +6083,12 @@ dataset:
                         outputs=[batch_image_display, batch_status_text]
                     )
 
-                    # Batch clear points
+                    # Batch clear points (현재 프레임만)
                     def batch_clear_points():
                         self.annotations = {'foreground': [], 'background': []}
                         if len(self.frames) > 0:
-                            frame_rgb = self.frames[self.current_frame_idx].copy()  # 이미 RGB
-                            return frame_rgb, "Points 초기화됨"
+                            frame_rgb = cv2.cvtColor(self.frames[self.current_frame_idx], cv2.COLOR_BGR2RGB) if self.frames[self.current_frame_idx].shape[2] == 3 else self.frames[self.current_frame_idx]
+                            return frame_rgb, "현재 프레임 Points 초기화됨"
                         return None, "Points 초기화됨"
 
                     batch_clear_btn.click(
