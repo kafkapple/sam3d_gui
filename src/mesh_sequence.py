@@ -245,7 +245,7 @@ def render_mesh_view(
 
     except Exception as e:
         print(f"Render error: {e}")
-        return _render_mesh_simple(mesh_path, output_path, resolution)
+        return _render_mesh_simple(actual_path, output_path, resolution)
 
 
 def _render_mesh_simple(
