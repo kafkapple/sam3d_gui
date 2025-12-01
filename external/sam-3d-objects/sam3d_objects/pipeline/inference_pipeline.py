@@ -564,8 +564,9 @@ class InferencePipeline:
                 outputs["mesh"][0],
                 # Optional parameters
                 simplify=simplify_ratio,  # Ratio of triangles to remove in the simplification process
+                fill_holes=False,  # Disabled to avoid nvdiffrast Segfault on large meshes
                 texture_size=texture_size,  # Size of the texture used for the GLB
-                verbose=False,
+                verbose=True,  # Enable verbose to see mesh sizes
                 with_mesh_postprocess=with_mesh_postprocess,
                 with_texture_baking=with_texture_baking,
                 use_vertex_color=use_vertex_color,
