@@ -7547,6 +7547,304 @@ dataset:
                         outputs=[aug_status]
                     )
 
+                # ===== Tab 5: Image Crop =====
+                with gr.Tab("✂️ Image Crop"):
+                    gr.Markdown("### Mask 기반 이미지 Crop")
+                    gr.Markdown("RGB/Mask 이미지 쌍을 mask bounding box 기준으로 crop합니다.")
+
+                    with gr.Row():
+                        # Left column: Settings
+                        with gr.Column(scale=1):
+                            gr.Markdown("#### 📂 Directory Settings")
+
+                            crop_input_dir = gr.Textbox(
+                                label="Input Directory",
+                                placeholder="/path/to/input/folder",
+                                info="RGB/Mask 쌍이 있는 폴더"
+                            )
+                            crop_input_browse = gr.Button("📂 Browse Input", size="sm")
+
+                            crop_output_dir = gr.Textbox(
+                                label="Output Directory",
+                                placeholder="/path/to/output/folder",
+                                info="Crop된 이미지 저장 위치"
+                            )
+                            crop_output_browse = gr.Button("📂 Browse Output", size="sm")
+
+                            gr.Markdown("#### 🔍 Pattern Settings")
+                            with gr.Row():
+                                crop_rgb_pattern = gr.Textbox(
+                                    label="RGB Pattern",
+                                    value="rgb",
+                                    info="RGB 이미지/폴더 패턴"
+                                )
+                                crop_mask_pattern = gr.Textbox(
+                                    label="Mask Pattern",
+                                    value="mask",
+                                    info="Mask 이미지/폴더 패턴"
+                                )
+
+                            gr.Markdown("#### ⚙️ Crop Settings")
+                            with gr.Row():
+                                crop_padding_px = gr.Number(
+                                    label="Padding (px)",
+                                    value=0,
+                                    minimum=0,
+                                    maximum=500,
+                                    step=5,
+                                    info="고정 패딩 (픽셀)"
+                                )
+                                crop_padding_ratio = gr.Slider(
+                                    label="Padding Ratio",
+                                    minimum=0.0,
+                                    maximum=0.5,
+                                    value=0.1,
+                                    step=0.05,
+                                    info="bbox 크기 비율 패딩"
+                                )
+
+                            crop_square = gr.Checkbox(
+                                label="Square Crop",
+                                value=False,
+                                info="정사각형으로 crop"
+                            )
+
+                            with gr.Row():
+                                crop_resize_w = gr.Number(
+                                    label="Resize Width",
+                                    value=0,
+                                    minimum=0,
+                                    step=32,
+                                    info="0 = 원본 크기 유지"
+                                )
+                                crop_resize_h = gr.Number(
+                                    label="Resize Height",
+                                    value=0,
+                                    minimum=0,
+                                    step=32,
+                                    info="0 = 원본 크기 유지"
+                                )
+
+                            gr.Markdown("#### 🔢 Batch Options")
+                            crop_max_images = gr.Number(
+                                label="Max Images",
+                                value=0,
+                                minimum=0,
+                                step=1,
+                                info="0 = 전체 처리"
+                            )
+
+                            gr.Markdown("#### 🎬 Actions")
+                            crop_scan_btn = gr.Button("🔍 Scan Directory", variant="secondary")
+                            crop_preview_btn = gr.Button("👁️ Preview", variant="secondary")
+                            crop_run_btn = gr.Button("✂️ Run Batch Crop", variant="primary")
+
+                        # Right column: Preview & Results
+                        with gr.Column(scale=2):
+                            gr.Markdown("#### 📋 Found Image Pairs")
+                            crop_file_list = gr.Dataframe(
+                                headers=["#", "RGB File", "Mask File"],
+                                datatype=["number", "str", "str"],
+                                row_count=10,
+                                col_count=(3, "fixed"),
+                                interactive=False
+                            )
+
+                            crop_pair_selector = gr.Slider(
+                                label="Select Pair for Preview",
+                                minimum=0,
+                                maximum=0,
+                                step=1,
+                                value=0,
+                                visible=False
+                            )
+
+                            gr.Markdown("#### 🖼️ Preview")
+                            with gr.Row():
+                                crop_preview_original = gr.Image(
+                                    label="Original (with bbox)",
+                                    type="numpy",
+                                    height=300
+                                )
+                                crop_preview_cropped = gr.Image(
+                                    label="Cropped Result",
+                                    type="numpy",
+                                    height=300
+                                )
+
+                            crop_status = gr.Markdown("Select input directory and scan to find image pairs.")
+                            crop_progress = gr.Markdown("")
+
+                    # Image Crop Event Handlers
+                    # Store found pairs in state
+                    crop_pairs_state = gr.State([])
+
+                    def scan_crop_directory(input_dir, rgb_pattern, mask_pattern):
+                        """Scan directory for RGB/Mask pairs"""
+                        from image_cropper import find_image_pairs
+
+                        if not input_dir:
+                            return [], [[]], gr.Slider(maximum=0, visible=False), "❌ Input directory not specified"
+
+                        if not Path(input_dir).exists():
+                            return [], [[]], gr.Slider(maximum=0, visible=False), f"❌ Directory not found: {input_dir}"
+
+                        pairs = find_image_pairs(input_dir, rgb_pattern, mask_pattern)
+
+                        if not pairs:
+                            return [], [[]], gr.Slider(maximum=0, visible=False), f"⚠️ No RGB/Mask pairs found with patterns: rgb='{rgb_pattern}', mask='{mask_pattern}'"
+
+                        # Create dataframe data
+                        df_data = []
+                        for i, (rgb_path, mask_path) in enumerate(pairs):
+                            df_data.append([i + 1, rgb_path.name, mask_path.name])
+
+                        status = f"✅ Found {len(pairs)} image pairs"
+                        slider_update = gr.Slider(minimum=0, maximum=len(pairs) - 1, value=0, visible=True)
+
+                        return pairs, df_data, slider_update, status
+
+                    def preview_crop_pair(pairs, idx, padding_px, padding_ratio, square):
+                        """Preview crop for selected pair"""
+                        from image_cropper import preview_crop
+                        import cv2
+
+                        if not pairs or idx >= len(pairs):
+                            return None, None, "❌ No pairs to preview"
+
+                        rgb_path, mask_path = pairs[int(idx)]
+
+                        result = preview_crop(
+                            str(rgb_path),
+                            str(mask_path),
+                            padding=int(padding_px),
+                            padding_ratio=float(padding_ratio),
+                            square=square
+                        )
+
+                        if result is None:
+                            # Still show original
+                            rgb = cv2.imread(str(rgb_path))
+                            if rgb is not None:
+                                rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+                            return rgb, None, "⚠️ No mask content found (empty mask)"
+
+                        rgb_cropped, mask_cropped, bbox = result
+
+                        # Draw bbox on original
+                        rgb_original = cv2.imread(str(rgb_path))
+                        rgb_original = cv2.cvtColor(rgb_original, cv2.COLOR_BGR2RGB)
+                        x, y, w, h = bbox
+                        cv2.rectangle(rgb_original, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+                        # Create overlay for cropped
+                        import numpy as np
+                        rgb_display = rgb_cropped.copy()
+                        mask_3ch = np.stack([mask_cropped] * 3, axis=-1)
+                        overlay = np.zeros_like(rgb_display)
+                        overlay[:, :, 1] = 100
+                        rgb_display = np.where(mask_3ch > 127, cv2.addWeighted(rgb_display, 0.7, overlay, 0.3, 0), rgb_display)
+
+                        status = f"✅ Preview: {rgb_path.name}\nBbox: x={x}, y={y}, w={w}, h={h}"
+                        return rgb_original, rgb_display, status
+
+                    def run_batch_crop(pairs, output_dir, rgb_pattern, mask_pattern,
+                                       padding_px, padding_ratio, square, resize_w, resize_h, max_images):
+                        """Run batch crop operation"""
+                        from image_cropper import crop_image_pair
+
+                        if not pairs:
+                            return "❌ No image pairs found. Scan directory first."
+
+                        if not output_dir:
+                            return "❌ Output directory not specified"
+
+                        # Limit pairs if max_images specified
+                        pairs_to_process = pairs
+                        if max_images > 0:
+                            pairs_to_process = pairs[:int(max_images)]
+
+                        # Resize setting
+                        resize = None
+                        if resize_w > 0 and resize_h > 0:
+                            resize = (int(resize_w), int(resize_h))
+
+                        # Create output directories
+                        output_path = Path(output_dir)
+                        output_rgb_dir = output_path / rgb_pattern
+                        output_mask_dir = output_path / mask_pattern
+                        output_rgb_dir.mkdir(parents=True, exist_ok=True)
+                        output_mask_dir.mkdir(parents=True, exist_ok=True)
+
+                        successful = 0
+                        failed = 0
+                        errors = []
+
+                        for rgb_file, mask_file in pairs_to_process:
+                            output_rgb = output_rgb_dir / rgb_file.name
+                            output_mask = output_mask_dir / mask_file.name
+
+                            result = crop_image_pair(
+                                str(rgb_file),
+                                str(mask_file),
+                                str(output_rgb),
+                                str(output_mask),
+                                padding=int(padding_px),
+                                padding_ratio=float(padding_ratio),
+                                square=square,
+                                resize=resize
+                            )
+
+                            if result.success:
+                                successful += 1
+                            else:
+                                failed += 1
+                                errors.append(f"{rgb_file.name}: {result.error_message}")
+
+                        status = f"""
+✅ **Batch Crop Complete**
+
+- **Processed:** {len(pairs_to_process)} images
+- **Successful:** {successful}
+- **Failed:** {failed}
+- **Output:** {output_dir}
+"""
+                        if errors:
+                            status += f"\n**Errors:**\n" + "\n".join(errors[:5])
+                            if len(errors) > 5:
+                                status += f"\n... and {len(errors) - 5} more errors"
+
+                        return status
+
+                    # Connect event handlers
+                    crop_scan_btn.click(
+                        fn=scan_crop_directory,
+                        inputs=[crop_input_dir, crop_rgb_pattern, crop_mask_pattern],
+                        outputs=[crop_pairs_state, crop_file_list, crop_pair_selector, crop_status]
+                    )
+
+                    crop_preview_btn.click(
+                        fn=preview_crop_pair,
+                        inputs=[crop_pairs_state, crop_pair_selector, crop_padding_px, crop_padding_ratio, crop_square],
+                        outputs=[crop_preview_original, crop_preview_cropped, crop_status]
+                    )
+
+                    crop_pair_selector.change(
+                        fn=preview_crop_pair,
+                        inputs=[crop_pairs_state, crop_pair_selector, crop_padding_px, crop_padding_ratio, crop_square],
+                        outputs=[crop_preview_original, crop_preview_cropped, crop_status]
+                    )
+
+                    crop_run_btn.click(
+                        fn=run_batch_crop,
+                        inputs=[
+                            crop_pairs_state, crop_output_dir, crop_rgb_pattern, crop_mask_pattern,
+                            crop_padding_px, crop_padding_ratio, crop_square,
+                            crop_resize_w, crop_resize_h, crop_max_images
+                        ],
+                        outputs=[crop_status]
+                    )
+
         return demo
 
 def main():
