@@ -485,6 +485,7 @@ class InferencePipeline:
         texture_size=1024,
         texture_nviews=100,
         texture_render_resolution=1024,
+        save_rendered_views=None,
     ) -> dict:
         """
         Parameters:
@@ -497,6 +498,7 @@ class InferencePipeline:
         - texture_size (int, optional): Size of the output texture map. Default is 1024.
         - texture_nviews (int, optional): Number of views for texture baking. Default is 100.
         - texture_render_resolution (int, optional): Resolution for multiview rendering. Default is 1024.
+        - save_rendered_views (str, optional): Path to save rendered views. Default is None (don't save).
         Returns:
         - dict: A dictionary containing the GLB file and additional data from the sparse structure sampling.
         """
@@ -535,7 +537,8 @@ class InferencePipeline:
             outputs = self.postprocess_slat_output(
                 outputs, with_mesh_postprocess, with_texture_baking, use_vertex_color,
                 simplify_ratio=simplify_ratio, texture_size=texture_size,
-                texture_nviews=texture_nviews, texture_render_resolution=texture_render_resolution
+                texture_nviews=texture_nviews, texture_render_resolution=texture_render_resolution,
+                save_rendered_views=save_rendered_views
             )
             logger.info("Finished!")
 
@@ -546,7 +549,8 @@ class InferencePipeline:
 
     def postprocess_slat_output(
         self, outputs, with_mesh_postprocess, with_texture_baking, use_vertex_color,
-        simplify_ratio=0.95, texture_size=1024, texture_nviews=100, texture_render_resolution=1024
+        simplify_ratio=0.95, texture_size=1024, texture_nviews=100, texture_render_resolution=1024,
+        save_rendered_views=None
     ):
         # GLB files can be extracted from the outputs
         logger.info(
@@ -568,6 +572,7 @@ class InferencePipeline:
                 rendering_engine=self.rendering_engine,
                 texture_nviews=texture_nviews,
                 texture_render_resolution=texture_render_resolution,
+                save_rendered_views=save_rendered_views,
             )
 
         # glb.export("sample.glb")

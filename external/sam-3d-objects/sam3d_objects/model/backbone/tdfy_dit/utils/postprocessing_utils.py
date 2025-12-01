@@ -597,6 +597,7 @@ def to_glb(
     rendering_engine: str = "nvdiffrast",  # nvdiffrast OR "pytorch3d"
     texture_nviews: int = 100,  # Number of views for texture baking
     texture_render_resolution: int = 1024,  # Resolution for multiview rendering
+    save_rendered_views: str = None,  # Path to save rendered views (None = don't save)
 ) -> trimesh.Trimesh:
     """
     Convert a generated asset to a glb file.
@@ -640,6 +641,16 @@ def to_glb(
         observations, extrinsics, intrinsics = render_multiview(
             app_rep, resolution=texture_render_resolution, nviews=texture_nviews
         )
+
+        # Save rendered views if path is provided
+        if save_rendered_views is not None:
+            import os
+            os.makedirs(save_rendered_views, exist_ok=True)
+            for i, obs in enumerate(observations):
+                view_path = os.path.join(save_rendered_views, f"view_{i:03d}.png")
+                Image.fromarray(obs).save(view_path)
+            logger.info(f"Saved {len(observations)} rendered views to {save_rendered_views}")
+
         masks = [np.any(observation > 0, axis=-1) for observation in observations]
         extrinsics = [extrinsics[i].cpu().numpy() for i in range(len(extrinsics))]
         intrinsics = [intrinsics[i].cpu().numpy() for i in range(len(intrinsics))]
