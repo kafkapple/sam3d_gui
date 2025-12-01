@@ -250,7 +250,28 @@ python3 src/gui_app.py
 | **Simplify Ratio** | 0.95 | 0.5-0.99 | Face 유지 비율 (0.95 = 5% 제거) | Mesh 후처리 ON |
 | **Texture Baking** | OFF | ON/OFF | 텍스처 맵 생성 | ⚠️ nvdiffrast 필요 |
 | **Texture Size** | 1024 | 512/1024/2048 | 텍스처 해상도 | Texture Baking ON |
+| **Render Views** | 64 | 16-100 | 텍스처 베이킹용 멀티뷰 수 | Texture Baking ON |
+| **Render Resolution** | 512 | 256/512/1024 | 각 뷰 렌더링 해상도 | Texture Baking ON |
 | **Vertex Color** | ON | ON/OFF | 버텍스에 색상 저장 | None |
+
+#### GPU별 Texture Baking 권장 설정
+
+| GPU | VRAM | Texture Size | Render Views | Render Resolution | 예상 시간 |
+|-----|------|--------------|--------------|-------------------|----------|
+| **RTX 3060** | 12GB | 512 | 16 | 256 | ~2분 |
+| **RTX 4090** | 24GB | 1024 | 32 | 512 | ~3분 |
+| **A6000 (안전)** | 48GB | 1024 | 32 | 512 | ~3분 |
+| **A6000 (권장)** | 48GB | 1024 | 48 | 512 | ~5분 |
+| **A6000 (고품질)** | 48GB | 2048 | 64 | 512 | ~10분 |
+
+**A6000 권장 설정 (안정성 + 품질 균형):**
+```python
+with_mesh_postprocess=True,
+with_texture_baking=True,
+texture_size=1024,
+texture_nviews=32,
+texture_render_resolution=512
+```
 
 #### nvdiffrast 설치 (선택사항)
 
@@ -339,24 +360,80 @@ If motion_threshold = 100.0: No motion ❌
 
 ## 📂 Output Files
 
-All results saved to `outputs/` directory:
+All results saved to `outputs/` directory.
+
+### SAM3D Output Types
+
+SAM3D는 **두 가지 타입**의 3D 출력을 생성합니다:
+
+| Type | Format | Description | 용도 |
+|------|--------|-------------|------|
+| **Gaussian Splatting** | PLY | 포인트 클라우드 (3DGS 형식) | 실시간 렌더링, Novel View Synthesis |
+| **Mesh** | PLY/GLB | 버텍스 + 페이스 (FlexiCubes) | 3D 프린팅, 게임 엔진, 편집 |
+
+### 옵션별 Output 구조
+
+#### 1. 기본 옵션 (Mesh 후처리 OFF, Texture Baking OFF)
 
 ```
 outputs/
-├── mask_overlay.png          # Segmentation visualization (RGB + mask overlay)
-├── reconstruction.ply        # 3D Gaussian Splatting mesh
-├── mask_frame_0.png         # Per-frame masks
-├── mask_frame_1.png
+├── {unique_id}_frame{N}_{timestamp}_gaussian.ply   # 3D Gaussian Splatting
+├── {unique_id}_frame{N}_{timestamp}_mesh.ply       # Mesh (vertex color)
+├── mask_overlay.png
+└── mask_frame_*.png
+```
+
+- **gaussian.ply**: 3DGS 포인트 클라우드 (~10-50MB)
+- **mesh.ply**: FlexiCubes 메시, 버텍스 컬러만 (~5-30MB)
+
+#### 2. Mesh 후처리 ON (Texture Baking OFF)
+
+```
+outputs/
+├── {unique_id}_frame{N}_{timestamp}_gaussian.ply
+├── {unique_id}_frame{N}_{timestamp}_mesh.ply       # 단순화된 메시
 └── ...
 ```
 
-### File Descriptions
+- **mesh.ply**: Simplify ratio 적용된 메시 (face 수 감소)
+- 홀 채우기, 메시 정리 적용
+
+#### 3. Texture Baking ON (권장 - 고품질)
+
+```
+outputs/
+├── {unique_id}_frame{N}_{timestamp}_gaussian.ply
+├── {unique_id}_frame{N}_{timestamp}_mesh.glb       # 텍스처 포함 GLB
+├── {unique_id}_frame{N}_{timestamp}_views/         # 렌더링된 뷰 저장
+│   ├── view_000.png                                # 멀티뷰 이미지
+│   ├── view_001.png
+│   ├── ...
+│   └── texture_map.png                             # UV 텍스처 맵
+└── ...
+```
+
+- **mesh.glb**: 텍스처 맵 내장된 GLB (Blender, Unity에서 바로 사용)
+- **views/**: 텍스처 베이킹에 사용된 멀티뷰 이미지들
+- **texture_map.png**: UV 맵핑된 텍스처 (별도 저장)
+
+### 옵션 비교표
+
+| 옵션 조합 | 출력 파일 | 품질 | 속도 | VRAM |
+|----------|----------|------|------|------|
+| 기본 (모두 OFF) | gaussian.ply, mesh.ply | ⭐⭐ | ⭐⭐⭐⭐⭐ | 낮음 |
+| Mesh 후처리 ON | gaussian.ply, mesh.ply (단순화) | ⭐⭐⭐ | ⭐⭐⭐⭐ | 중간 |
+| Texture Baking ON | gaussian.ply, mesh.glb, views/ | ⭐⭐⭐⭐⭐ | ⭐⭐ | 높음 |
+
+### 파일 설명
 
 | File | Format | Description | Size |
 |------|--------|-------------|------|
+| `*_gaussian.ply` | PLY | 3D Gaussian Splatting 포인트 클라우드 | ~10-50 MB |
+| `*_mesh.ply` | PLY | FlexiCubes 메시 (버텍스 컬러) | ~5-30 MB |
+| `*_mesh.glb` | GLB | 텍스처 맵 내장 메시 (Texture Baking) | ~10-50 MB |
+| `texture_map.png` | PNG | UV 텍스처 맵 | ~1-16 MB |
+| `view_*.png` | PNG | 멀티뷰 렌더링 이미지 | ~0.5-2 MB each |
 | `mask_overlay.png` | PNG | Segmentation mask overlaid on original frame | ~1-5 MB |
-| `reconstruction.ply` | PLY | 3D point cloud (Gaussian Splatting format) | ~10-100 MB |
-| `reconstruction.obj` | OBJ | 3D mesh (if converted from PLY) | ~5-50 MB |
 | `mask_frame_N.png` | PNG | Binary mask for frame N | ~100-500 KB |
 
 ---
