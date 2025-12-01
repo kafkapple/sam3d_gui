@@ -101,13 +101,16 @@ echo "💡 디버그 모드: ./run.sh --debug"
 echo ""
 
 # 웹 앱 실행 (상대 경로)
-# conda run은 출력을 버퍼링하므로, --no-capture-output 옵션 사용
-# 또는 직접 conda activate 후 실행
+# conda run은 부모 shell의 환경변수(CUDA_HOME 등)를 상속하지 않음
+# 따라서 직접 conda activate 후 실행
+eval "$(conda shell.bash hook)"
+conda activate sam3d_gui
+
 if [[ "$DEBUG_MODE" == "1" ]]; then
     # 디버그 모드: 출력 버퍼링 없이 실행
-    conda run --no-capture-output -n sam3d_gui python -u "$PROJECT_ROOT/src/web_app.py"
+    python -u "$PROJECT_ROOT/src/web_app.py"
 else
-    conda run -n sam3d_gui python "$PROJECT_ROOT/src/web_app.py"
+    python "$PROJECT_ROOT/src/web_app.py"
 fi
 
 echo ""
