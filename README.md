@@ -256,28 +256,29 @@ python3 src/gui_app.py
 
 #### Texture Baking 설정
 
-⚠️ **주의**: Texture Baking은 nvdiffrast 렌더링 엔진을 사용하며, 호환성 문제로 **Segmentation fault**가 발생할 수 있습니다. 낮은 값으로 시작하여 점진적으로 올리는 것을 권장합니다.
+🚨 **경고: 현재 불안정**
 
-| 설정 레벨 | Texture Size | Render Views | Render Resolution | 안정성 | 품질 |
-|----------|--------------|--------------|-------------------|--------|------|
-| **안전 (기본값)** | 512 | 16 | 256 | ⭐⭐⭐⭐⭐ | ⭐⭐ |
-| **권장** | 512 | 32 | 512 | ⭐⭐⭐⭐ | ⭐⭐⭐ |
-| **고품질** | 1024 | 48 | 512 | ⭐⭐⭐ | ⭐⭐⭐⭐ |
-| **최고품질** | 1024 | 64 | 1024 | ⭐⭐ | ⭐⭐⭐⭐⭐ |
+Texture Baking은 내부적으로 `utils3d.torch.rasterize_triangle_faces()`를 사용하며, 이 함수가 **nvdiffrast**를 호출합니다. `rendering_engine="pytorch3d"` 설정과 관계없이 **Segmentation fault**가 발생할 수 있습니다.
 
-**기본 안전 설정 (GUI 기본값):**
+**원인 분석:**
+- `bake_texture()` → 텍스처 최적화 후 마스크 생성
+- `utils3d.torch.RastContext(backend="cuda")` → nvdiffrast 호출
+- nvdiffrast 0.3.5 + CUDA 호환성 문제로 Segfault 발생
+
+**권장 설정:**
 ```python
-with_mesh_postprocess=False,
-with_texture_baking=True,
-texture_size=512,
-texture_nviews=16,
-texture_render_resolution=256
+# ✅ 안정적 (권장)
+with_texture_baking=False,
+use_vertex_color=True
+
+# ⚠️ 불안정 (Segfault 위험)
+with_texture_baking=True  # 어떤 값이든 크래시 가능
 ```
 
-**Segfault 발생 시 해결 방법:**
-1. Texture Baking OFF → Vertex Color만 사용
-2. 더 낮은 값으로 시작 (nviews=8, resolution=256)
-3. nvdiffrast 재설치: `pip install --force-reinstall git+https://github.com/NVlabs/nvdiffrast.git`
+**Texture Baking이 필요한 경우 해결 방법:**
+1. **nvdiffrast 재설치**: `pip install --force-reinstall git+https://github.com/NVlabs/nvdiffrast.git`
+2. **CUDA 버전 확인**: nvdiffrast가 현재 CUDA와 호환되는지 확인
+3. **다른 서버에서 테스트**: 환경에 따라 동작할 수 있음
 
 #### nvdiffrast 설치 (선택사항)
 

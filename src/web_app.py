@@ -5539,11 +5539,11 @@ dataset:
                                     batch_mesh_texture_baking = gr.Checkbox(
                                         label="Texture Baking",
                                         value=False,
-                                        info="⚠️ 메모리 많이 필요 (추가 시간 + OOM 위험)"
+                                        info="⚠️ 불안정: nvdiffrast Segfault 위험. Vertex Color 권장"
                                     )
                                     # Texture baking 세부 옵션 (숨김)
                                     with gr.Column(visible=False) as batch_texture_options:
-                                        gr.Markdown("⚠️ **안정성 주의**: Texture baking은 nvdiffrast 호환성 문제로 Segfault 발생 가능. 낮은 값으로 시작 권장.")
+                                        gr.Markdown("🚨 **경고**: Texture Baking은 nvdiffrast 내부 rasterization 사용으로 **Segfault 발생 가능**. 현재 불안정합니다. **Vertex Color ON + Texture Baking OFF** 권장.")
                                         batch_mesh_texture_size = gr.Dropdown(
                                             label="Texture Size",
                                             choices=[512, 1024, 2048],

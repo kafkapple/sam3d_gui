@@ -557,7 +557,7 @@ class InferencePipeline:
             f"Postprocessing mesh with option with_mesh_postprocess {with_mesh_postprocess}, with_texture_baking {with_texture_baking}..."
         )
         if with_texture_baking:
-            logger.info(f"   Texture baking: size={texture_size}, nviews={texture_nviews}, resolution={texture_render_resolution}")
+            logger.info(f"   Texture baking: size={texture_size}, nviews={texture_nviews}, resolution={texture_render_resolution}, engine={self.rendering_engine}")
         if "mesh" in outputs:
             glb = postprocessing_utils.to_glb(
                 outputs["gaussian"][0],
