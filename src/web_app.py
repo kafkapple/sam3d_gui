@@ -7920,6 +7920,14 @@ dataset:
                                     label="Vertex Color",
                                     value=True
                                 )
+                                meshseq_chunk_size = gr.Number(
+                                    label="Chunk Size",
+                                    value=5,
+                                    minimum=1,
+                                    maximum=20,
+                                    step=1,
+                                    info="GPU 메모리 정리 주기 (N프레임마다)"
+                                )
 
                             gr.Markdown("#### 📤 Output Settings")
                             meshseq_output_dir = gr.Textbox(
@@ -8116,12 +8124,13 @@ dataset:
                     def generate_mesh_sequence(
                         state_data, start_frame, end_frame, frame_step,
                         seed, stage1_steps, stage2_steps,
-                        postprocess, simplify_ratio, vertex_color,
+                        postprocess, simplify_ratio, vertex_color, chunk_size,
                         output_dir, fps, progress=gr.Progress()
                     ):
                         """Generate mesh sequence for frame range with memory-efficient chunked processing"""
                         import gc
                         import torch
+                        from datetime import datetime
 
                         def clear_gpu_memory():
                             """Aggressively clear GPU memory"""
@@ -8170,7 +8179,7 @@ dataset:
                             failed = []
 
                             # Chunked processing for memory efficiency
-                            CHUNK_SIZE = 5  # Process N frames, then clear memory
+                            CHUNK_SIZE = max(1, int(chunk_size))
                             total = len(frames_to_process)
 
                             for i, frame_idx in enumerate(frames_to_process):
@@ -8398,7 +8407,7 @@ The script will import meshes as shape key animation.
                         inputs=[
                             meshseq_state, meshseq_start_frame, meshseq_end_frame, meshseq_frame_step,
                             meshseq_seed, meshseq_stage1_steps, meshseq_stage2_steps,
-                            meshseq_postprocess, meshseq_simplify_ratio, meshseq_vertex_color,
+                            meshseq_postprocess, meshseq_simplify_ratio, meshseq_vertex_color, meshseq_chunk_size,
                             meshseq_output_dir, meshseq_fps
                         ],
                         outputs=[meshseq_state, meshseq_status]  # Updated state + status
