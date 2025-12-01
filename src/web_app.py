@@ -7845,6 +7845,543 @@ dataset:
                         outputs=[crop_status]
                     )
 
+                # ===== Tab 6: Multi-frame Mesh Sequence =====
+                with gr.Tab("🎬 Mesh Sequence"):
+                    gr.Markdown("### Multi-frame 3D Mesh 생성")
+                    gr.Markdown("여러 프레임에서 3D mesh를 생성하고, 영상/Blender 포맷으로 내보냅니다.")
+
+                    with gr.Row():
+                        # Left column: Source & Settings
+                        with gr.Column(scale=1):
+                            gr.Markdown("#### 📂 Source Selection")
+
+                            # Session selection
+                            meshseq_session_dir = gr.Textbox(
+                                label="Session Directory",
+                                value=str(Path(self.default_output_dir) / "sessions"),
+                                placeholder="Batch propagation 결과가 있는 세션 폴더"
+                            )
+                            meshseq_scan_btn = gr.Button("📂 Scan Sessions", size="sm")
+
+                            meshseq_session_list = gr.Dropdown(
+                                label="Select Session",
+                                choices=[],
+                                interactive=True
+                            )
+                            meshseq_load_btn = gr.Button("📥 Load Session", variant="secondary")
+
+                            meshseq_session_info = gr.Markdown("No session loaded")
+
+                            gr.Markdown("#### 🎯 Frame Range")
+                            with gr.Row():
+                                meshseq_start_frame = gr.Number(
+                                    label="Start Frame",
+                                    value=0,
+                                    minimum=0,
+                                    step=1
+                                )
+                                meshseq_end_frame = gr.Number(
+                                    label="End Frame",
+                                    value=10,
+                                    minimum=1,
+                                    step=1
+                                )
+                            meshseq_frame_step = gr.Number(
+                                label="Frame Step",
+                                value=1,
+                                minimum=1,
+                                step=1,
+                                info="N프레임마다 mesh 생성 (1=모든 프레임)"
+                            )
+
+                            gr.Markdown("#### ⚙️ Mesh Generation Settings")
+                            with gr.Row():
+                                meshseq_seed = gr.Number(label="Seed", value=42, minimum=0)
+                                meshseq_stage1_steps = gr.Slider(
+                                    label="Stage1 Steps",
+                                    minimum=5, maximum=50, value=25, step=5
+                                )
+                            meshseq_stage2_steps = gr.Slider(
+                                label="Stage2 Steps",
+                                minimum=5, maximum=50, value=25, step=5
+                            )
+
+                            with gr.Accordion("Advanced Settings", open=False):
+                                meshseq_postprocess = gr.Checkbox(
+                                    label="Mesh Postprocess",
+                                    value=False,
+                                    info="Simplify & hole filling (requires nvdiffrast)"
+                                )
+                                meshseq_simplify_ratio = gr.Slider(
+                                    label="Simplify Ratio",
+                                    minimum=0.5, maximum=0.99, value=0.95, step=0.05
+                                )
+                                meshseq_vertex_color = gr.Checkbox(
+                                    label="Vertex Color",
+                                    value=True
+                                )
+
+                            gr.Markdown("#### 📤 Output Settings")
+                            meshseq_output_dir = gr.Textbox(
+                                label="Output Directory",
+                                value=str(Path(self.default_output_dir) / "mesh_sequences"),
+                                placeholder="Mesh sequence 저장 위치"
+                            )
+                            meshseq_fps = gr.Number(
+                                label="FPS",
+                                value=30.0,
+                                minimum=1.0,
+                                step=1.0,
+                                info="출력 영상 FPS"
+                            )
+
+                            gr.Markdown("#### 🎬 Actions")
+                            meshseq_generate_btn = gr.Button(
+                                "🔨 Generate Mesh Sequence",
+                                variant="primary"
+                            )
+
+                            with gr.Row():
+                                meshseq_render_video_btn = gr.Button(
+                                    "🎥 Render Video",
+                                    variant="secondary"
+                                )
+                                meshseq_export_blender_btn = gr.Button(
+                                    "📦 Export for Blender",
+                                    variant="secondary"
+                                )
+
+                        # Right column: Preview & Results
+                        with gr.Column(scale=2):
+                            gr.Markdown("#### 🖼️ Frame Preview")
+                            with gr.Row():
+                                meshseq_frame_preview = gr.Image(
+                                    label="Frame + Mask",
+                                    type="numpy",
+                                    height=300
+                                )
+                                meshseq_mesh_preview = gr.Image(
+                                    label="Generated Mesh View",
+                                    type="numpy",
+                                    height=300
+                                )
+
+                            meshseq_frame_slider = gr.Slider(
+                                label="Preview Frame",
+                                minimum=0,
+                                maximum=100,
+                                step=1,
+                                value=0,
+                                visible=False
+                            )
+
+                            gr.Markdown("#### 📊 Generation Progress")
+                            meshseq_progress_text = gr.Markdown("")
+
+                            gr.Markdown("#### 📋 Results")
+                            meshseq_status = gr.Markdown("Load a session to start.")
+
+                            meshseq_output_video = gr.Video(
+                                label="Rendered Video",
+                                visible=False
+                            )
+
+                    # Mesh Sequence Event Handlers
+                    meshseq_state = gr.State({})  # Store session data
+
+                    def scan_meshseq_sessions(session_dir):
+                        """Scan for batch sessions"""
+                        try:
+                            session_path = Path(session_dir)
+                            if not session_path.exists():
+                                return gr.Dropdown(choices=[]), "❌ Directory not found"
+
+                            sessions = []
+                            for session_file in session_path.rglob("session_metadata.json"):
+                                try:
+                                    with open(session_file, 'r') as f:
+                                        metadata = json.load(f)
+                                        if metadata.get('session_type') == 'batch':
+                                            sessions.append(str(session_file.parent))
+                                except:
+                                    pass
+
+                            if not sessions:
+                                return gr.Dropdown(choices=[]), "⚠️ No batch sessions found"
+
+                            return gr.Dropdown(choices=sorted(sessions)), f"✅ Found {len(sessions)} batch sessions"
+                        except Exception as e:
+                            return gr.Dropdown(choices=[]), f"❌ Error: {e}"
+
+                    def load_meshseq_session(session_path):
+                        """Load batch session for mesh sequence generation"""
+                        try:
+                            if not session_path:
+                                return {}, None, gr.Slider(visible=False), "⚠️ Select a session first"
+
+                            session_path = Path(session_path)
+                            metadata_file = session_path / "session_metadata.json"
+
+                            if not metadata_file.exists():
+                                return {}, None, gr.Slider(visible=False), "❌ Session metadata not found"
+
+                            with open(metadata_file, 'r') as f:
+                                metadata = json.load(f)
+
+                            # Find all video directories
+                            video_dirs = sorted([d for d in session_path.iterdir()
+                                                 if d.is_dir() and d.name.startswith('video_')])
+
+                            if not video_dirs:
+                                return {}, None, gr.Slider(visible=False), "❌ No video directories found"
+
+                            # Use first video for now
+                            first_video = video_dirs[0]
+                            frame_dirs = sorted([d for d in first_video.iterdir()
+                                                 if d.is_dir() and d.name.startswith('frame_')])
+
+                            total_frames = len(frame_dirs)
+
+                            # Load first frame for preview
+                            preview_img = None
+                            if frame_dirs:
+                                original_path = frame_dirs[0] / "original.png"
+                                mask_path = frame_dirs[0] / "mask.png"
+                                if original_path.exists():
+                                    import cv2
+                                    img = cv2.imread(str(original_path))
+                                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                                    if mask_path.exists():
+                                        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                                        # Overlay mask
+                                        overlay = img.copy()
+                                        overlay[mask > 127] = overlay[mask > 127] * 0.5 + np.array([0, 255, 0]) * 0.5
+                                        preview_img = overlay.astype(np.uint8)
+                                    else:
+                                        preview_img = img
+
+                            state_data = {
+                                'session_path': str(session_path),
+                                'video_dirs': [str(d) for d in video_dirs],
+                                'current_video': str(first_video),
+                                'frame_dirs': [str(d) for d in frame_dirs],
+                                'total_frames': total_frames,
+                                'metadata': metadata
+                            }
+
+                            info = f"""
+✅ **Session Loaded**
+
+- **Path:** {session_path.name}
+- **Videos:** {len(video_dirs)}
+- **Frames (first video):** {total_frames}
+- **Created:** {metadata.get('timestamp', 'N/A')}
+"""
+                            slider_update = gr.Slider(minimum=0, maximum=total_frames-1, value=0, visible=True)
+
+                            return state_data, preview_img, slider_update, info
+
+                        except Exception as e:
+                            import traceback
+                            return {}, None, gr.Slider(visible=False), f"❌ Error: {e}\n{traceback.format_exc()}"
+
+                    def preview_meshseq_frame(state_data, frame_idx):
+                        """Preview specific frame"""
+                        try:
+                            if not state_data or 'frame_dirs' not in state_data:
+                                return None, "No session loaded"
+
+                            frame_dirs = state_data['frame_dirs']
+                            if frame_idx >= len(frame_dirs):
+                                return None, f"Frame {frame_idx} out of range"
+
+                            frame_dir = Path(frame_dirs[int(frame_idx)])
+                            original_path = frame_dir / "original.png"
+                            mask_path = frame_dir / "mask.png"
+
+                            import cv2
+                            if original_path.exists():
+                                img = cv2.imread(str(original_path))
+                                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                                if mask_path.exists():
+                                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                                    overlay = img.copy()
+                                    overlay[mask > 127] = (overlay[mask > 127] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
+                                    return overlay, f"Frame {int(frame_idx)}"
+                                return img, f"Frame {int(frame_idx)} (no mask)"
+                            return None, "Frame not found"
+                        except Exception as e:
+                            return None, f"Error: {e}"
+
+                    def generate_mesh_sequence(
+                        state_data, start_frame, end_frame, frame_step,
+                        seed, stage1_steps, stage2_steps,
+                        postprocess, simplify_ratio, vertex_color,
+                        output_dir, fps, progress=gr.Progress()
+                    ):
+                        """Generate mesh sequence for frame range"""
+                        try:
+                            if not state_data:
+                                return "❌ No session loaded"
+
+                            frame_dirs = state_data.get('frame_dirs', [])
+                            if not frame_dirs:
+                                return "❌ No frames found"
+
+                            start_idx = int(start_frame)
+                            end_idx = min(int(end_frame), len(frame_dirs))
+                            step = max(1, int(frame_step))
+
+                            frames_to_process = list(range(start_idx, end_idx, step))
+                            if not frames_to_process:
+                                return "❌ No frames in specified range"
+
+                            # Create output directory
+                            output_path = Path(output_dir)
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            sequence_dir = output_path / f"sequence_{timestamp}"
+                            sequence_dir.mkdir(parents=True, exist_ok=True)
+
+                            mesh_settings = {
+                                'seed': int(seed),
+                                'stage1_inference_steps': int(stage1_steps),
+                                'stage2_inference_steps': int(stage2_steps),
+                                'with_mesh_postprocess': postprocess,
+                                'simplify_ratio': float(simplify_ratio),
+                                'use_vertex_color': vertex_color,
+                                'with_texture_baking': False
+                            }
+
+                            # Unload SAM2 before mesh generation
+                            self.unload_sam2_models()
+
+                            generated_meshes = []
+                            failed = []
+
+                            total = len(frames_to_process)
+                            for i, frame_idx in enumerate(frames_to_process):
+                                progress((i + 0.5) / total, desc=f"Generating mesh {i+1}/{total} (frame {frame_idx})")
+
+                                frame_dir = Path(frame_dirs[frame_idx])
+                                original_path = frame_dir / "original.png"
+                                mask_path = frame_dir / "mask.png"
+
+                                if not original_path.exists() or not mask_path.exists():
+                                    failed.append(f"Frame {frame_idx}: missing files")
+                                    continue
+
+                                import cv2
+                                frame = cv2.imread(str(original_path))
+                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                                mask = (mask > 127).astype(np.uint8) * 255
+
+                                try:
+                                    reconstruction = self.processor.reconstruct_3d(
+                                        frame, mask,
+                                        seed=mesh_settings['seed'],
+                                        mesh_settings=mesh_settings
+                                    )
+
+                                    if reconstruction:
+                                        mesh_path = sequence_dir / f"mesh_{frame_idx:04d}.ply"
+                                        self.processor.export_mesh(reconstruction, str(mesh_path), format='ply')
+                                        generated_meshes.append({
+                                            'frame_idx': frame_idx,
+                                            'mesh_path': str(mesh_path)
+                                        })
+                                    else:
+                                        failed.append(f"Frame {frame_idx}: reconstruction failed")
+
+                                except Exception as e:
+                                    failed.append(f"Frame {frame_idx}: {str(e)[:50]}")
+
+                            # Save sequence metadata
+                            seq_metadata = {
+                                'name': f"sequence_{timestamp}",
+                                'fps': float(fps),
+                                'frame_count': len(generated_meshes),
+                                'source_session': state_data.get('session_path', ''),
+                                'frame_range': [start_idx, end_idx, step],
+                                'mesh_settings': mesh_settings,
+                                'frames': generated_meshes,
+                                'created_at': datetime.now().isoformat()
+                            }
+
+                            with open(sequence_dir / "sequence_metadata.json", 'w') as f:
+                                json.dump(seq_metadata, f, indent=2)
+
+                            # Store for later use
+                            state_data['current_sequence_dir'] = str(sequence_dir)
+
+                            status = f"""
+### ✅ Mesh Sequence Generated
+
+- **Output:** {sequence_dir}
+- **Meshes Generated:** {len(generated_meshes)}
+- **Failed:** {len(failed)}
+- **Frame Range:** {start_idx} - {end_idx} (step {step})
+"""
+                            if failed:
+                                status += f"\n**Errors:**\n" + "\n".join(failed[:5])
+
+                            return status
+
+                        except Exception as e:
+                            import traceback
+                            return f"❌ Error: {e}\n{traceback.format_exc()}"
+
+                    def render_meshseq_video(state_data, output_dir, fps, progress=gr.Progress()):
+                        """Render mesh sequence to video"""
+                        try:
+                            sequence_dir = state_data.get('current_sequence_dir')
+                            if not sequence_dir:
+                                return None, "❌ No mesh sequence generated yet"
+
+                            from mesh_sequence import MeshSequenceGenerator, render_mesh_sequence_video, MeshSequence, MeshFrame
+
+                            # Load sequence
+                            metadata_path = Path(sequence_dir) / "sequence_metadata.json"
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+
+                            sequence = MeshSequence(
+                                name=metadata['name'],
+                                fps=float(fps),
+                                output_dir=sequence_dir
+                            )
+
+                            for frame_data in metadata.get('frames', []):
+                                mesh_frame = MeshFrame(
+                                    frame_idx=frame_data['frame_idx'],
+                                    mesh_path=frame_data['mesh_path']
+                                )
+                                sequence.frames.append(mesh_frame)
+
+                            if not sequence.frames:
+                                return None, "❌ No meshes in sequence"
+
+                            # Render video
+                            video_path = Path(sequence_dir) / "sequence_video.mp4"
+
+                            def prog_callback(current, total, msg):
+                                progress(current / total, desc=msg)
+
+                            success = render_mesh_sequence_video(
+                                sequence,
+                                str(video_path),
+                                view_type="fixed",
+                                resolution=(512, 512),
+                                progress_callback=prog_callback
+                            )
+
+                            if success and video_path.exists():
+                                return str(video_path), f"✅ Video saved: {video_path}"
+                            else:
+                                return None, "❌ Video rendering failed"
+
+                        except Exception as e:
+                            import traceback
+                            return None, f"❌ Error: {e}\n{traceback.format_exc()}"
+
+                    def export_meshseq_blender(state_data, output_dir):
+                        """Export mesh sequence for Blender"""
+                        try:
+                            sequence_dir = state_data.get('current_sequence_dir')
+                            if not sequence_dir:
+                                return "❌ No mesh sequence generated yet"
+
+                            from mesh_sequence import MeshSequenceGenerator, export_mesh_sequence_obj, generate_blender_import_script, MeshSequence, MeshFrame
+
+                            # Load sequence
+                            metadata_path = Path(sequence_dir) / "sequence_metadata.json"
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+
+                            sequence = MeshSequence(
+                                name=metadata['name'],
+                                fps=metadata.get('fps', 30.0),
+                                output_dir=sequence_dir
+                            )
+
+                            for frame_data in metadata.get('frames', []):
+                                mesh_frame = MeshFrame(
+                                    frame_idx=frame_data['frame_idx'],
+                                    mesh_path=frame_data['mesh_path']
+                                )
+                                sequence.frames.append(mesh_frame)
+
+                            # Export OBJ sequence
+                            blender_dir = Path(sequence_dir) / "blender_export"
+                            obj_dir = export_mesh_sequence_obj(sequence, str(blender_dir / "obj_sequence"))
+
+                            # Generate import script
+                            script_path = blender_dir / "import_to_blender.py"
+                            generate_blender_import_script(obj_dir, str(script_path), "obj")
+
+                            return f"""
+### ✅ Blender Export Complete
+
+**Output Directory:** {blender_dir}
+
+**Files:**
+- `obj_sequence/`: OBJ mesh files (one per frame)
+- `import_to_blender.py`: Blender import script
+
+**Usage in Blender:**
+1. Open Blender
+2. Go to Scripting workspace
+3. Open `import_to_blender.py`
+4. Run the script
+
+The script will import meshes as shape key animation.
+"""
+                        except Exception as e:
+                            import traceback
+                            return f"❌ Error: {e}\n{traceback.format_exc()}"
+
+                    # Connect event handlers
+                    meshseq_scan_btn.click(
+                        fn=scan_meshseq_sessions,
+                        inputs=[meshseq_session_dir],
+                        outputs=[meshseq_session_list, meshseq_status]
+                    )
+
+                    meshseq_load_btn.click(
+                        fn=load_meshseq_session,
+                        inputs=[meshseq_session_list],
+                        outputs=[meshseq_state, meshseq_frame_preview, meshseq_frame_slider, meshseq_session_info]
+                    )
+
+                    meshseq_frame_slider.change(
+                        fn=preview_meshseq_frame,
+                        inputs=[meshseq_state, meshseq_frame_slider],
+                        outputs=[meshseq_frame_preview, meshseq_progress_text]
+                    )
+
+                    meshseq_generate_btn.click(
+                        fn=generate_mesh_sequence,
+                        inputs=[
+                            meshseq_state, meshseq_start_frame, meshseq_end_frame, meshseq_frame_step,
+                            meshseq_seed, meshseq_stage1_steps, meshseq_stage2_steps,
+                            meshseq_postprocess, meshseq_simplify_ratio, meshseq_vertex_color,
+                            meshseq_output_dir, meshseq_fps
+                        ],
+                        outputs=[meshseq_status]
+                    )
+
+                    meshseq_render_video_btn.click(
+                        fn=render_meshseq_video,
+                        inputs=[meshseq_state, meshseq_output_dir, meshseq_fps],
+                        outputs=[meshseq_output_video, meshseq_status]
+                    )
+
+                    meshseq_export_blender_btn.click(
+                        fn=export_meshseq_blender,
+                        inputs=[meshseq_state, meshseq_output_dir],
+                        outputs=[meshseq_status]
+                    )
+
         return demo
 
 def main():
