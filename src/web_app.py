@@ -8122,11 +8122,11 @@ dataset:
                         """Generate mesh sequence for frame range"""
                         try:
                             if not state_data:
-                                return "❌ No session loaded"
+                                return state_data, "❌ No session loaded"
 
                             frame_dirs = state_data.get('frame_dirs', [])
                             if not frame_dirs:
-                                return "❌ No frames found"
+                                return state_data, "❌ No frames found"
 
                             start_idx = int(start_frame)
                             end_idx = min(int(end_frame), len(frame_dirs))
@@ -8134,7 +8134,7 @@ dataset:
 
                             frames_to_process = list(range(start_idx, end_idx, step))
                             if not frames_to_process:
-                                return "❌ No frames in specified range"
+                                return state_data, "❌ No frames in specified range"
 
                             # Create output directory
                             output_path = Path(output_dir)
@@ -8211,8 +8211,9 @@ dataset:
                             with open(sequence_dir / "sequence_metadata.json", 'w') as f:
                                 json.dump(seq_metadata, f, indent=2)
 
-                            # Store for later use
-                            state_data['current_sequence_dir'] = str(sequence_dir)
+                            # Update state with new sequence dir (return updated state)
+                            new_state = dict(state_data)
+                            new_state['current_sequence_dir'] = str(sequence_dir)
 
                             status = f"""
 ### ✅ Mesh Sequence Generated
@@ -8221,15 +8222,19 @@ dataset:
 - **Meshes Generated:** {len(generated_meshes)}
 - **Failed:** {len(failed)}
 - **Frame Range:** {start_idx} - {end_idx} (step {step})
+
+**Next Steps:**
+- Click **Render Video** to create MP4 visualization
+- Click **Export for Blender** to create OBJ sequence + import script
 """
                             if failed:
                                 status += f"\n**Errors:**\n" + "\n".join(failed[:5])
 
-                            return status
+                            return new_state, status
 
                         except Exception as e:
                             import traceback
-                            return f"❌ Error: {e}\n{traceback.format_exc()}"
+                            return state_data, f"❌ Error: {e}\n{traceback.format_exc()}"
 
                     def render_meshseq_video(state_data, output_dir, fps, progress=gr.Progress()):
                         """Render mesh sequence to video"""
@@ -8367,7 +8372,7 @@ The script will import meshes as shape key animation.
                             meshseq_postprocess, meshseq_simplify_ratio, meshseq_vertex_color,
                             meshseq_output_dir, meshseq_fps
                         ],
-                        outputs=[meshseq_status]
+                        outputs=[meshseq_state, meshseq_status]  # Updated state + status
                     )
 
                     meshseq_render_video_btn.click(
