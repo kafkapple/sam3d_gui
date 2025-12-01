@@ -8203,6 +8203,7 @@ dataset:
                                     reconstruction = self.processor.reconstruct_3d(
                                         frame, mask,
                                         seed=mesh_settings['seed'],
+                                        cleanup_after=False,  # Don't unload model yet
                                         mesh_settings=mesh_settings
                                     )
 
@@ -8230,7 +8231,12 @@ dataset:
                                         else:
                                             failed.append(f"Frame {frame_idx}: mesh file not found after export")
 
-                                        # Explicitly delete reconstruction object
+                                        # Explicitly delete reconstruction tensors to free memory
+                                        if isinstance(reconstruction, dict):
+                                            for key in list(reconstruction.keys()):
+                                                if hasattr(reconstruction[key], 'cpu'):
+                                                    reconstruction[key] = reconstruction[key].cpu()
+                                                del reconstruction[key]
                                         del reconstruction
                                     else:
                                         failed.append(f"Frame {frame_idx}: reconstruction failed")
@@ -8238,13 +8244,23 @@ dataset:
                                 except Exception as e:
                                     failed.append(f"Frame {frame_idx}: {str(e)[:50]}")
 
-                                # Clear memory every CHUNK_SIZE frames
-                                if (i + 1) % CHUNK_SIZE == 0:
-                                    progress((i + 0.8) / total, desc=f"Clearing GPU memory after {i+1} frames...")
-                                    clear_gpu_memory()
-
-                                # Delete frame data
+                                # Delete frame data immediately
                                 del frame, mask
+
+                                # Clear memory EVERY frame for long sequences
+                                clear_gpu_memory()
+
+                                # Additionally clear internal SAM3D caches every CHUNK_SIZE frames
+                                if (i + 1) % CHUNK_SIZE == 0:
+                                    progress((i + 0.8) / total, desc=f"Deep memory cleanup after {i+1} frames...")
+                                    # Force clear processor's internal caches if available
+                                    if hasattr(self.processor, 'inference_model') and self.processor.inference_model is not None:
+                                        if hasattr(self.processor.inference_model, 'pipeline'):
+                                            pipeline = self.processor.inference_model.pipeline
+                                            # Clear any cached tensors in the pipeline
+                                            if hasattr(pipeline, 'clear_cache'):
+                                                pipeline.clear_cache()
+                                    clear_gpu_memory()
 
                             # Final memory cleanup
                             clear_gpu_memory()

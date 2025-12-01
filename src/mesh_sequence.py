@@ -456,14 +456,16 @@ def render_mesh_sequence_video(
 
 def export_mesh_sequence_obj(
     mesh_sequence: MeshSequence,
-    output_dir: str
+    output_dir: str,
+    file_format: str = "ply"
 ) -> str:
     """
-    Export mesh sequence as numbered OBJ files for Blender import.
+    Export mesh sequence as numbered mesh files for Blender import.
 
     Args:
         mesh_sequence: MeshSequence object
         output_dir: Output directory
+        file_format: "ply" (recommended, supports vertex colors) or "obj"
 
     Returns:
         Path to output directory
@@ -471,26 +473,22 @@ def export_mesh_sequence_obj(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    ext = file_format.lower()
+    if ext not in ["ply", "obj"]:
+        ext = "ply"
+
     for i, mesh_frame in enumerate(mesh_sequence.frames):
         # Load mesh
         vertices, faces, colors = load_ply_mesh(mesh_frame.mesh_path)
 
-        # Write OBJ
-        obj_path = output_path / f"mesh_{i:04d}.obj"
-        with open(obj_path, 'w') as f:
-            f.write(f"# Frame {i}\n")
+        mesh_file = output_path / f"mesh_{i:04d}.{ext}"
 
-            # Vertices with colors as comments
-            for v_idx, v in enumerate(vertices):
-                if colors is not None and v_idx < len(colors):
-                    c = colors[v_idx] / 255.0
-                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {c[0]:.3f} {c[1]:.3f} {c[2]:.3f}\n")
-                else:
-                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-
-            # Faces (1-indexed)
-            for face in faces:
-                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+        if ext == "ply":
+            # PLY format - native vertex color support
+            _write_ply_with_colors(mesh_file, vertices, faces, colors)
+        else:
+            # OBJ format - vertex colors in extended format (limited support)
+            _write_obj_with_colors(mesh_file, vertices, faces, colors)
 
     # Write metadata
     metadata_path = output_path / "sequence_info.json"
@@ -500,10 +498,72 @@ def export_mesh_sequence_obj(
             "fps": mesh_sequence.fps,
             "frame_count": mesh_sequence.frame_count,
             "duration": mesh_sequence.duration,
-            "files": [f"mesh_{i:04d}.obj" for i in range(mesh_sequence.frame_count)]
+            "format": ext,
+            "files": [f"mesh_{i:04d}.{ext}" for i in range(mesh_sequence.frame_count)]
         }, f, indent=2)
 
     return str(output_path)
+
+
+def _write_ply_with_colors(
+    filepath: Path,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    colors: Optional[np.ndarray] = None
+) -> None:
+    """Write PLY file with vertex colors."""
+    has_colors = colors is not None and len(colors) == len(vertices)
+
+    with open(filepath, 'w') as f:
+        # Header
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {len(vertices)}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        if has_colors:
+            f.write("property uchar red\n")
+            f.write("property uchar green\n")
+            f.write("property uchar blue\n")
+        f.write(f"element face {len(faces)}\n")
+        f.write("property list uchar int vertex_indices\n")
+        f.write("end_header\n")
+
+        # Vertices
+        for v_idx, v in enumerate(vertices):
+            if has_colors:
+                c = colors[v_idx].astype(int)
+                f.write(f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {c[0]} {c[1]} {c[2]}\n")
+            else:
+                f.write(f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+
+        # Faces
+        for face in faces:
+            f.write(f"3 {face[0]} {face[1]} {face[2]}\n")
+
+
+def _write_obj_with_colors(
+    filepath: Path,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    colors: Optional[np.ndarray] = None
+) -> None:
+    """Write OBJ file (limited vertex color support)."""
+    with open(filepath, 'w') as f:
+        f.write(f"# Exported mesh\n")
+
+        # Vertices with colors (extended OBJ format)
+        for v_idx, v in enumerate(vertices):
+            if colors is not None and v_idx < len(colors):
+                c = colors[v_idx] / 255.0
+                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {c[0]:.3f} {c[1]:.3f} {c[2]:.3f}\n")
+            else:
+                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+
+        # Faces (1-indexed)
+        for face in faces:
+            f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
 
 
 def export_mesh_sequence_mdd(
@@ -632,7 +692,7 @@ def export_mesh_sequence_alembic(
 def generate_blender_import_script(
     sequence_dir: str,
     output_script_path: str,
-    sequence_type: str = "obj"  # "obj", "mdd", or "alembic"
+    sequence_type: str = "ply"  # "ply", "obj", "mdd", or "alembic"
 ) -> str:
     """
     Generate a Blender Python script for importing the mesh sequence.
@@ -640,12 +700,19 @@ def generate_blender_import_script(
     Args:
         sequence_dir: Directory containing mesh files
         output_script_path: Path to save the script
-        sequence_type: Type of sequence files
+        sequence_type: Type of sequence files ("ply" recommended for vertex colors)
 
     Returns:
         Path to generated script
     """
-    if sequence_type == "obj":
+    if sequence_type in ["obj", "ply"]:
+        # Determine file extension and import operator
+        ext = sequence_type
+        if sequence_type == "ply":
+            import_func = "bpy.ops.wm.ply_import(filepath=str(mesh_path))"
+        else:
+            import_func = "bpy.ops.wm.obj_import(filepath=str(mesh_path))"
+
         script = f'''
 import bpy
 import os
@@ -657,31 +724,98 @@ sequence_dir = r"{sequence_dir}"
 # Load sequence info
 import json
 info_path = Path(sequence_dir) / "sequence_info.json"
-with open(info_path, 'r') as f:
-    info = json.load(f)
+if info_path.exists():
+    with open(info_path, 'r') as f:
+        info = json.load(f)
+    fps = info.get('fps', 24)
+    frame_count = info.get('frame_count', 0)
+    file_format = info.get('format', '{ext}')
+else:
+    # Auto-detect from files
+    fps = 24
+    mesh_files = sorted(Path(sequence_dir).glob("mesh_*.{ext}"))
+    if not mesh_files:
+        mesh_files = sorted(Path(sequence_dir).glob("mesh_*.ply")) or sorted(Path(sequence_dir).glob("mesh_*.obj"))
+    frame_count = len(mesh_files)
+    file_format = '{ext}'
 
-fps = info['fps']
-frame_count = info['frame_count']
+print(f"Loading {{frame_count}} frames at {{fps}} fps")
 
 # Set scene FPS
 bpy.context.scene.render.fps = int(fps)
 bpy.context.scene.frame_start = 0
 bpy.context.scene.frame_end = frame_count - 1
 
+# Clear selection
+bpy.ops.object.select_all(action='DESELECT')
+
 # Import first mesh as base
-first_obj = Path(sequence_dir) / "mesh_0000.obj"
-bpy.ops.wm.obj_import(filepath=str(first_obj))
+mesh_path = Path(sequence_dir) / f"mesh_0000.{{file_format}}"
+if not mesh_path.exists():
+    # Try alternative formats
+    for alt_ext in ['ply', 'obj']:
+        alt_path = Path(sequence_dir) / f"mesh_0000.{{alt_ext}}"
+        if alt_path.exists():
+            mesh_path = alt_path
+            file_format = alt_ext
+            break
+
+if file_format == 'ply':
+    bpy.ops.wm.ply_import(filepath=str(mesh_path))
+else:
+    bpy.ops.wm.obj_import(filepath=str(mesh_path))
+
 base_obj = bpy.context.selected_objects[0]
 base_obj.name = "MeshSequence"
+
+# Enable vertex colors display
+if base_obj.data.color_attributes:
+    # Set viewport shading to show vertex colors
+    for area in bpy.context.screen.areas:
+        if area.type == 'VIEW_3D':
+            for space in area.spaces:
+                if space.type == 'VIEW_3D':
+                    space.shading.type = 'SOLID'
+                    space.shading.color_type = 'VERTEX'
+
+# Create material with vertex colors
+mat = bpy.data.materials.new(name="VertexColorMaterial")
+mat.use_nodes = True
+nodes = mat.node_tree.nodes
+links = mat.node_tree.links
+
+# Clear default nodes
+for node in nodes:
+    nodes.remove(node)
+
+# Create nodes for vertex color
+output_node = nodes.new(type='ShaderNodeOutputMaterial')
+bsdf_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+color_attr_node = nodes.new(type='ShaderNodeVertexColor')
+
+# Position nodes
+output_node.location = (300, 0)
+bsdf_node.location = (0, 0)
+color_attr_node.location = (-300, 0)
+
+# Connect nodes
+links.new(color_attr_node.outputs['Color'], bsdf_node.inputs['Base Color'])
+links.new(bsdf_node.outputs['BSDF'], output_node.inputs['Surface'])
+
+# Assign material
+base_obj.data.materials.append(mat)
 
 # Add shape keys for animation
 base_obj.shape_key_add(name="Basis", from_mix=False)
 
 for i in range(1, frame_count):
-    obj_path = Path(sequence_dir) / f"mesh_{{i:04d}}.obj"
-    if obj_path.exists():
+    mesh_path = Path(sequence_dir) / f"mesh_{{i:04d}}.{{file_format}}"
+    if mesh_path.exists():
         # Import temp mesh
-        bpy.ops.wm.obj_import(filepath=str(obj_path))
+        if file_format == 'ply':
+            bpy.ops.wm.ply_import(filepath=str(mesh_path))
+        else:
+            bpy.ops.wm.obj_import(filepath=str(mesh_path))
         temp_obj = bpy.context.selected_objects[0]
 
         # Join as shape key
@@ -698,6 +832,8 @@ for i in range(1, frame_count):
         temp_obj.select_set(True)
         bpy.ops.object.delete()
 
+        print(f"Loaded frame {{i}}/{{frame_count-1}}")
+
 # Animate shape keys
 for i, key in enumerate(base_obj.data.shape_keys.key_blocks[1:], 1):
     # Set keyframes: value 0 except at frame i
@@ -705,7 +841,15 @@ for i, key in enumerate(base_obj.data.shape_keys.key_blocks[1:], 1):
         key.value = 1.0 if frame == i else 0.0
         key.keyframe_insert(data_path="value", frame=frame)
 
+# Select base object
+bpy.ops.object.select_all(action='DESELECT')
+base_obj.select_set(True)
+bpy.context.view_layer.objects.active = base_obj
+
+print(f"\\n=== Import Complete ===")
 print(f"Imported {{frame_count}} frames as shape key animation")
+print(f"Vertex colors enabled via material 'VertexColorMaterial'")
+print(f"Press Space to play animation in Timeline")
 '''
     elif sequence_type == "mdd":
         script = f'''
