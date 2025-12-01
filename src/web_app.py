@@ -5543,26 +5543,26 @@ dataset:
                                     )
                                     # Texture baking 세부 옵션 (숨김)
                                     with gr.Column(visible=False) as batch_texture_options:
-                                        gr.Markdown("⚠️ **메모리 주의**: A6000(48GB)은 높은 값 가능, RTX 3060(12GB)은 낮은 값 권장")
+                                        gr.Markdown("⚠️ **안정성 주의**: Texture baking은 nvdiffrast 호환성 문제로 Segfault 발생 가능. 낮은 값으로 시작 권장.")
                                         batch_mesh_texture_size = gr.Dropdown(
                                             label="Texture Size",
                                             choices=[512, 1024, 2048],
-                                            value=1024,
-                                            info="출력 텍스처 해상도 (A6000: 1024, 3060: 512)"
+                                            value=512,
+                                            info="출력 텍스처 해상도 (안전: 512, 고품질: 1024)"
                                         )
                                         batch_mesh_texture_nviews = gr.Slider(
                                             label="Render Views",
-                                            minimum=16,
+                                            minimum=8,
                                             maximum=100,
-                                            value=64,
+                                            value=16,
                                             step=8,
-                                            info="뷰 수 (A6000: 64-100, 3060: 32-50)"
+                                            info="뷰 수 (안전: 16, 권장: 32, 고품질: 64)"
                                         )
                                         batch_mesh_texture_resolution = gr.Dropdown(
                                             label="Render Resolution",
                                             choices=[256, 512, 1024],
-                                            value=512,
-                                            info="멀티뷰 렌더링 해상도 (A6000: 512-1024, 3060: 256-512)"
+                                            value=256,
+                                            info="멀티뷰 렌더링 해상도 (안전: 256, 권장: 512)"
                                         )
                                     batch_mesh_vertex_color = gr.Checkbox(
                                         label="Vertex Color 사용",

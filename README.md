@@ -254,24 +254,30 @@ python3 src/gui_app.py
 | **Render Resolution** | 512 | 256/512/1024 | 각 뷰 렌더링 해상도 | Texture Baking ON |
 | **Vertex Color** | ON | ON/OFF | 버텍스에 색상 저장 | None |
 
-#### GPU별 Texture Baking 권장 설정
+#### Texture Baking 설정
 
-| GPU | VRAM | Texture Size | Render Views | Render Resolution | 예상 시간 |
-|-----|------|--------------|--------------|-------------------|----------|
-| **RTX 3060** | 12GB | 512 | 16 | 256 | ~2분 |
-| **RTX 4090** | 24GB | 1024 | 32 | 512 | ~3분 |
-| **A6000 (안전)** | 48GB | 1024 | 32 | 512 | ~3분 |
-| **A6000 (권장)** | 48GB | 1024 | 48 | 512 | ~5분 |
-| **A6000 (고품질)** | 48GB | 2048 | 64 | 512 | ~10분 |
+⚠️ **주의**: Texture Baking은 nvdiffrast 렌더링 엔진을 사용하며, 호환성 문제로 **Segmentation fault**가 발생할 수 있습니다. 낮은 값으로 시작하여 점진적으로 올리는 것을 권장합니다.
 
-**A6000 권장 설정 (안정성 + 품질 균형):**
+| 설정 레벨 | Texture Size | Render Views | Render Resolution | 안정성 | 품질 |
+|----------|--------------|--------------|-------------------|--------|------|
+| **안전 (기본값)** | 512 | 16 | 256 | ⭐⭐⭐⭐⭐ | ⭐⭐ |
+| **권장** | 512 | 32 | 512 | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| **고품질** | 1024 | 48 | 512 | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **최고품질** | 1024 | 64 | 1024 | ⭐⭐ | ⭐⭐⭐⭐⭐ |
+
+**기본 안전 설정 (GUI 기본값):**
 ```python
-with_mesh_postprocess=True,
+with_mesh_postprocess=False,
 with_texture_baking=True,
-texture_size=1024,
-texture_nviews=32,
-texture_render_resolution=512
+texture_size=512,
+texture_nviews=16,
+texture_render_resolution=256
 ```
+
+**Segfault 발생 시 해결 방법:**
+1. Texture Baking OFF → Vertex Color만 사용
+2. 더 낮은 값으로 시작 (nviews=8, resolution=256)
+3. nvdiffrast 재설치: `pip install --force-reinstall git+https://github.com/NVlabs/nvdiffrast.git`
 
 #### nvdiffrast 설치 (선택사항)
 
