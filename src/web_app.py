@@ -7943,10 +7943,40 @@ dataset:
                                 info="출력 영상 FPS"
                             )
 
+                            gr.Markdown("#### 📂 Existing Sequence (Incremental Mode)")
+                            meshseq_existing_dir = gr.Textbox(
+                                label="Existing Sequence Folder",
+                                value="",
+                                placeholder="기존 시퀀스 폴더 경로 (비어있으면 새로 생성)",
+                                info="이미 생성된 시퀀스에 추가하려면 경로 입력"
+                            )
+                            with gr.Row():
+                                meshseq_load_existing_btn = gr.Button(
+                                    "📂 Load Existing",
+                                    size="sm"
+                                )
+                                meshseq_clear_existing_btn = gr.Button(
+                                    "🗑️ Clear (New)",
+                                    size="sm"
+                                )
+                            meshseq_existing_info = gr.Markdown("*No existing sequence loaded*")
+
                             gr.Markdown("#### 🎬 Actions")
                             meshseq_generate_btn = gr.Button(
                                 "🔨 Generate Mesh Sequence",
                                 variant="primary"
+                            )
+
+                            gr.Markdown("#### 🎥 Video Render Options")
+                            meshseq_view_type = gr.Dropdown(
+                                label="View Type",
+                                choices=[
+                                    "Fixed (Front View)",
+                                    "Orbit per Frame (Recommended)",
+                                    "Full Orbit per Mesh"
+                                ],
+                                value="Orbit per Frame (Recommended)",
+                                info="Fixed: 정면 고정 / Orbit per Frame: 프레임 진행하며 회전 / Full Orbit: 각 메시 360° 회전"
                             )
 
                             with gr.Row():
@@ -8121,6 +8151,57 @@ dataset:
                         except Exception as e:
                             return None, f"Error: {e}"
 
+                    def load_existing_sequence(state_data, existing_dir):
+                        """Load existing mesh sequence for incremental generation"""
+                        try:
+                            if not existing_dir or not existing_dir.strip():
+                                return state_data, "*No path specified*"
+
+                            seq_path = Path(existing_dir.strip())
+                            if not seq_path.exists():
+                                return state_data, f"❌ Path not found: `{seq_path}`"
+
+                            # Find existing meshes
+                            existing_meshes = {}
+                            for ply_file in seq_path.glob("mesh_*.ply"):
+                                try:
+                                    fname = ply_file.stem
+                                    idx_str = fname.replace("mesh_", "").replace("_mesh", "")
+                                    frame_num = int(idx_str)
+                                    existing_meshes[frame_num] = str(ply_file)
+                                except:
+                                    pass
+
+                            if not existing_meshes:
+                                return state_data, f"⚠️ No mesh files found in `{seq_path}`"
+
+                            sorted_frames = sorted(existing_meshes.keys())
+
+                            # Update state
+                            new_state = dict(state_data) if state_data else {}
+                            new_state['current_sequence_dir'] = str(seq_path)
+
+                            info = f"""### 📂 Existing Sequence Loaded
+- **Path:** `{seq_path.name}`
+- **Meshes:** {len(existing_meshes)}
+- **Frames:** {sorted_frames[0]} - {sorted_frames[-1]}
+- **Frame List:** {sorted_frames[:10]}{'...' if len(sorted_frames) > 10 else ''}
+
+*Generate more frames → they will be added to this folder*"""
+
+                            return new_state, info
+
+                        except Exception as e:
+                            return state_data, f"❌ Error: {e}"
+
+                    def clear_existing_sequence(state_data):
+                        """Clear existing sequence selection to create new one"""
+                        if state_data:
+                            new_state = dict(state_data)
+                            new_state.pop('current_sequence_dir', None)
+                            return new_state, "*Cleared. New sequence will be created.*"
+                        return state_data, "*Cleared. New sequence will be created.*"
+
                     def generate_mesh_sequence(
                         state_data, start_frame, end_frame, frame_step,
                         seed, stage1_steps, stage2_steps,
@@ -8155,11 +8236,40 @@ dataset:
                             if not frames_to_process:
                                 return state_data, "❌ No frames in specified range"
 
-                            # Create output directory
+                            # Use existing sequence_dir if set, otherwise create new one
                             output_path = Path(output_dir)
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            sequence_dir = output_path / f"sequence_{timestamp}"
-                            sequence_dir.mkdir(parents=True, exist_ok=True)
+                            existing_sequence_dir = state_data.get('current_sequence_dir')
+
+                            if existing_sequence_dir and Path(existing_sequence_dir).exists():
+                                # Continue adding to existing sequence
+                                sequence_dir = Path(existing_sequence_dir)
+                                print(f"📁 Continuing with existing sequence: {sequence_dir}")
+                            else:
+                                # Create new sequence directory
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                sequence_dir = output_path / f"sequence_{timestamp}"
+                                sequence_dir.mkdir(parents=True, exist_ok=True)
+                                print(f"📁 Created new sequence: {sequence_dir}")
+
+                            # Find already generated meshes in this directory
+                            existing_meshes = {}
+                            for ply_file in sequence_dir.glob("mesh_*.ply"):
+                                try:
+                                    # Extract frame index from filename (mesh_0010.ply -> 10)
+                                    fname = ply_file.stem
+                                    idx_str = fname.replace("mesh_", "").replace("_mesh", "")
+                                    frame_num = int(idx_str)
+                                    existing_meshes[frame_num] = str(ply_file)
+                                except:
+                                    pass
+
+                            # Filter out already processed frames
+                            frames_already_done = [f for f in frames_to_process if f in existing_meshes]
+                            frames_to_process = [f for f in frames_to_process if f not in existing_meshes]
+
+                            skipped_count = len(frames_already_done)
+                            if skipped_count > 0:
+                                print(f"⏭️ Skipping {skipped_count} already generated frames: {frames_already_done[:5]}{'...' if skipped_count > 5 else ''}")
 
                             mesh_settings = {
                                 'seed': int(seed),
@@ -8182,7 +8292,18 @@ dataset:
                             CHUNK_SIZE = max(1, int(chunk_size))
                             total = len(frames_to_process)
 
+                            # Model reload interval to prevent memory accumulation
+                            MODEL_RELOAD_INTERVAL = 5  # Reload model every N frames
+
                             for i, frame_idx in enumerate(frames_to_process):
+                                # Reload SAM3D model periodically to prevent memory leak
+                                if i > 0 and i % MODEL_RELOAD_INTERVAL == 0:
+                                    progress((i + 0.1) / total, desc=f"Reloading SAM3D model to free memory...")
+                                    self.processor.cleanup_model()
+                                    clear_gpu_memory()
+                                    import time
+                                    time.sleep(1)  # Brief pause for memory to settle
+
                                 progress((i + 0.3) / total, desc=f"Generating mesh {i+1}/{total} (frame {frame_idx})")
 
                                 frame_dir = Path(frame_dirs[frame_idx])
@@ -8265,15 +8386,31 @@ dataset:
                             # Final memory cleanup
                             clear_gpu_memory()
 
-                            # Save sequence metadata
+                            # Collect ALL meshes in the directory (including previously generated)
+                            all_meshes_in_dir = {}
+                            for ply_file in sequence_dir.glob("mesh_*.ply"):
+                                try:
+                                    fname = ply_file.stem
+                                    idx_str = fname.replace("mesh_", "").replace("_mesh", "")
+                                    frame_num = int(idx_str)
+                                    all_meshes_in_dir[frame_num] = str(ply_file)
+                                except:
+                                    pass
+
+                            # Sort by frame index
+                            all_frames_sorted = sorted(all_meshes_in_dir.keys())
+                            all_meshes_list = [{'frame_idx': f, 'mesh_path': all_meshes_in_dir[f]} for f in all_frames_sorted]
+
+                            # Save sequence metadata with ALL meshes
                             seq_metadata = {
-                                'name': f"sequence_{timestamp}",
+                                'name': sequence_dir.name,
                                 'fps': float(fps),
-                                'frame_count': len(generated_meshes),
+                                'frame_count': len(all_meshes_list),
                                 'source_session': state_data.get('session_path', ''),
-                                'frame_range': [start_idx, end_idx, step],
+                                'frame_range': [min(all_frames_sorted) if all_frames_sorted else 0,
+                                               max(all_frames_sorted) + 1 if all_frames_sorted else 0, step],
                                 'mesh_settings': mesh_settings,
-                                'frames': generated_meshes,
+                                'frames': all_meshes_list,
                                 'created_at': datetime.now().isoformat()
                             }
 
@@ -8287,14 +8424,18 @@ dataset:
                             status = f"""
 ### ✅ Mesh Sequence Generated
 
-- **Output:** {sequence_dir}
-- **Meshes Generated:** {len(generated_meshes)}
+- **Output:** `{sequence_dir}`
+- **This Run:** {len(generated_meshes)} new meshes
+- **Skipped (existing):** {skipped_count}
 - **Failed:** {len(failed)}
-- **Frame Range:** {start_idx} - {end_idx} (step {step})
+- **Total in Folder:** {len(all_meshes_list)} meshes
+- **Frame Range:** {min(all_frames_sorted) if all_frames_sorted else 'N/A'} - {max(all_frames_sorted) if all_frames_sorted else 'N/A'}
+
+**📁 Incremental Mode:** Run again with different frame ranges to add more meshes to this sequence.
 
 **Next Steps:**
 - Click **Render Video** to create MP4 visualization
-- Click **Export for Blender** to create OBJ sequence + import script
+- Click **Export for Blender** to create PLY sequence + import script
 """
                             if failed:
                                 status += f"\n**Errors:**\n" + "\n".join(failed[:5])
@@ -8306,7 +8447,7 @@ dataset:
                             clear_gpu_memory()
                             return state_data, f"❌ Error: {e}\n{traceback.format_exc()}"
 
-                    def render_meshseq_video(state_data, output_dir, fps, progress=gr.Progress()):
+                    def render_meshseq_video(state_data, output_dir, fps, view_type, progress=gr.Progress()):
                         """Render mesh sequence to video"""
                         try:
                             sequence_dir = state_data.get('current_sequence_dir')
@@ -8350,8 +8491,16 @@ dataset:
                             if not sequence.frames:
                                 return None, "❌ No meshes found in sequence"
 
-                            # Render video
-                            video_path = Path(sequence_dir) / "sequence_video.mp4"
+                            # Render video with selected view type
+                            view_type_map = {
+                                "Fixed (Front View)": "fixed",
+                                "Orbit per Frame (Recommended)": "orbit_per_frame",
+                                "Full Orbit per Mesh": "orbit_full"
+                            }
+                            vtype = view_type_map.get(view_type, "orbit_per_frame")
+
+                            video_suffix = "_orbit" if "orbit" in vtype else "_fixed"
+                            video_path = Path(sequence_dir) / f"sequence_video{video_suffix}.mp4"
 
                             def prog_callback(current, total, msg):
                                 progress(current / total, desc=msg)
@@ -8359,13 +8508,16 @@ dataset:
                             success = render_mesh_sequence_video(
                                 sequence,
                                 str(video_path),
-                                view_type="fixed",
+                                view_type=vtype,
                                 resolution=(512, 512),
+                                orbit_frames_per_mesh=15,  # 15 frames per mesh for smooth orbit
+                                start_angle=-90.0,  # Front view start
+                                elevation=20.0,
                                 progress_callback=prog_callback
                             )
 
                             if success and video_path.exists():
-                                return str(video_path), f"✅ Video saved: {video_path}"
+                                return str(video_path), f"✅ Video saved: `{video_path.name}`\nView type: {view_type}"
                             else:
                                 return None, "❌ Video rendering failed (check terminal for details)"
 
@@ -8501,7 +8653,7 @@ The script will import meshes as shape key animation.
 
                     meshseq_render_video_btn.click(
                         fn=render_meshseq_video,
-                        inputs=[meshseq_state, meshseq_output_dir, meshseq_fps],
+                        inputs=[meshseq_state, meshseq_output_dir, meshseq_fps, meshseq_view_type],
                         outputs=[meshseq_output_video, meshseq_status]
                     )
 
@@ -8509,6 +8661,19 @@ The script will import meshes as shape key animation.
                         fn=export_meshseq_blender,
                         inputs=[meshseq_state, meshseq_output_dir],
                         outputs=[meshseq_status]
+                    )
+
+                    # Existing sequence management
+                    meshseq_load_existing_btn.click(
+                        fn=load_existing_sequence,
+                        inputs=[meshseq_state, meshseq_existing_dir],
+                        outputs=[meshseq_state, meshseq_existing_info]
+                    )
+
+                    meshseq_clear_existing_btn.click(
+                        fn=clear_existing_sequence,
+                        inputs=[meshseq_state],
+                        outputs=[meshseq_state, meshseq_existing_info]
                     )
 
         return demo

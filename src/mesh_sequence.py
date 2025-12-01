@@ -304,7 +304,9 @@ def create_orbit_camera_poses(
     num_frames: int,
     distance: float = 2.0,
     elevation: float = 30.0,
-    center: np.ndarray = None
+    center: np.ndarray = None,
+    start_angle: float = -90.0,
+    orbit_range: float = 360.0
 ) -> List[np.ndarray]:
     """
     Create camera poses orbiting around a center point.
@@ -314,6 +316,8 @@ def create_orbit_camera_poses(
         distance: Camera distance from center
         elevation: Elevation angle in degrees
         center: Center point (default: origin)
+        start_angle: Starting angle in degrees (default: -90 = front view)
+        orbit_range: Total orbit range in degrees (360 = full rotation)
 
     Returns:
         List of 4x4 camera pose matrices
@@ -323,9 +327,11 @@ def create_orbit_camera_poses(
 
     poses = []
     elevation_rad = np.radians(elevation)
+    start_rad = np.radians(start_angle)
 
     for i in range(num_frames):
-        angle = 2 * np.pi * i / num_frames
+        # Calculate angle with start offset
+        angle = start_rad + (np.radians(orbit_range) * i / num_frames)
 
         # Camera position
         x = distance * np.cos(angle) * np.cos(elevation_rad)
@@ -358,9 +364,11 @@ def create_orbit_camera_poses(
 def render_mesh_sequence_video(
     mesh_sequence: MeshSequence,
     output_path: str,
-    view_type: str = "orbit",
+    view_type: str = "orbit_per_frame",
     resolution: Tuple[int, int] = (512, 512),
-    orbit_frames: int = 60,
+    orbit_frames_per_mesh: int = 30,
+    start_angle: float = -90.0,
+    elevation: float = 20.0,
     progress_callback: Optional[Callable[[int, int, str], None]] = None
 ) -> bool:
     """
@@ -369,9 +377,14 @@ def render_mesh_sequence_video(
     Args:
         mesh_sequence: MeshSequence object
         output_path: Output video path (.mp4)
-        view_type: "orbit" (rotating view) or "fixed" (static view)
+        view_type:
+            - "fixed": Static front view for all frames
+            - "orbit_full": Full 360° orbit for EACH mesh (slow, detailed)
+            - "orbit_per_frame": Continuous orbit while progressing through frames (recommended)
         resolution: Video resolution
-        orbit_frames: Number of frames for orbit animation per mesh
+        orbit_frames_per_mesh: Frames per mesh for orbit animation
+        start_angle: Camera starting angle in degrees (-90 = front view)
+        elevation: Camera elevation angle in degrees
         progress_callback: Optional progress callback(current, total, message)
 
     Returns:
@@ -386,17 +399,52 @@ def render_mesh_sequence_video(
 
     try:
         frame_paths = []
-        total_frames = len(mesh_sequence.frames)
+        total_meshes = len(mesh_sequence.frames)
 
-        if view_type == "orbit":
-            # For each mesh, render from multiple viewpoints
-            camera_poses = create_orbit_camera_poses(orbit_frames)
+        if view_type == "orbit_full":
+            # Full 360° orbit for EACH mesh (slow but detailed)
+            for mesh_idx, mesh_frame in enumerate(mesh_sequence.frames):
+                if progress_callback:
+                    progress_callback(mesh_idx, total_meshes, f"Rendering mesh {mesh_idx + 1}/{total_meshes} (full orbit)")
+
+                camera_poses = create_orbit_camera_poses(
+                    orbit_frames_per_mesh,
+                    start_angle=start_angle,
+                    elevation=elevation,
+                    orbit_range=360.0
+                )
+
+                for cam_idx, pose in enumerate(camera_poses):
+                    frame_path = temp_dir / f"frame_{mesh_idx:04d}_{cam_idx:04d}.png"
+                    render_mesh_view(
+                        mesh_frame.mesh_path,
+                        str(frame_path),
+                        camera_pose=pose,
+                        resolution=resolution
+                    )
+                    frame_paths.append(str(frame_path))
+
+        elif view_type == "orbit_per_frame":
+            # Continuous orbit: camera rotates as frames progress
+            # Total rotation = 360° spread across all mesh frames
+            total_video_frames = total_meshes * orbit_frames_per_mesh
 
             for mesh_idx, mesh_frame in enumerate(mesh_sequence.frames):
                 if progress_callback:
-                    progress_callback(mesh_idx, total_frames, f"Rendering mesh {mesh_idx + 1}/{total_frames}")
+                    progress_callback(mesh_idx, total_meshes, f"Rendering mesh {mesh_idx + 1}/{total_meshes}")
 
-                # Render from orbit viewpoints
+                # Create camera poses for this mesh segment
+                # Each mesh gets a portion of the full orbit
+                segment_start = start_angle + (360.0 * mesh_idx / total_meshes)
+                segment_range = 360.0 / total_meshes  # Portion of orbit for this mesh
+
+                camera_poses = create_orbit_camera_poses(
+                    orbit_frames_per_mesh,
+                    start_angle=segment_start,
+                    elevation=elevation,
+                    orbit_range=segment_range
+                )
+
                 for cam_idx, pose in enumerate(camera_poses):
                     frame_path = temp_dir / f"frame_{mesh_idx:04d}_{cam_idx:04d}.png"
                     render_mesh_view(
@@ -408,15 +456,20 @@ def render_mesh_sequence_video(
                     frame_paths.append(str(frame_path))
 
         else:  # fixed view
-            # Render each mesh from fixed viewpoint
+            # Render each mesh from fixed front viewpoint
+            fixed_pose = create_orbit_camera_poses(
+                1, start_angle=start_angle, elevation=elevation
+            )[0]
+
             for mesh_idx, mesh_frame in enumerate(mesh_sequence.frames):
                 if progress_callback:
-                    progress_callback(mesh_idx, total_frames, f"Rendering mesh {mesh_idx + 1}/{total_frames}")
+                    progress_callback(mesh_idx, total_meshes, f"Rendering mesh {mesh_idx + 1}/{total_meshes}")
 
                 frame_path = temp_dir / f"frame_{mesh_idx:04d}.png"
                 render_mesh_view(
                     mesh_frame.mesh_path,
                     str(frame_path),
+                    camera_pose=fixed_pose,
                     resolution=resolution
                 )
                 frame_paths.append(str(frame_path))
@@ -424,25 +477,32 @@ def render_mesh_sequence_video(
         # Combine frames to video
         if frame_paths:
             first_frame = cv2.imread(frame_paths[0])
+            if first_frame is None:
+                print(f"Error: Could not read first frame: {frame_paths[0]}")
+                return False
+
             h, w = first_frame.shape[:2]
 
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            fps = mesh_sequence.fps if view_type == "fixed" else 30  # 30 fps for orbit
+            fps = mesh_sequence.fps if view_type == "fixed" else 30
             out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
 
             for frame_path in frame_paths:
                 frame = cv2.imread(frame_path)
-                out.write(frame)
+                if frame is not None:
+                    out.write(frame)
 
             out.release()
 
             if progress_callback:
-                progress_callback(total_frames, total_frames, "Video saved")
+                progress_callback(total_meshes, total_meshes, "Video saved")
 
             return True
 
     except Exception as e:
         print(f"Video rendering error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
     finally:
@@ -457,7 +517,8 @@ def render_mesh_sequence_video(
 def export_mesh_sequence_obj(
     mesh_sequence: MeshSequence,
     output_dir: str,
-    file_format: str = "ply"
+    file_format: str = "ply",
+    reuse_existing: bool = True
 ) -> str:
     """
     Export mesh sequence as numbered mesh files for Blender import.
@@ -466,6 +527,7 @@ def export_mesh_sequence_obj(
         mesh_sequence: MeshSequence object
         output_dir: Output directory
         file_format: "ply" (recommended, supports vertex colors) or "obj"
+        reuse_existing: If True, skip export if file already exists in output_dir
 
     Returns:
         Path to output directory
@@ -477,18 +539,40 @@ def export_mesh_sequence_obj(
     if ext not in ["ply", "obj"]:
         ext = "ply"
 
+    exported_count = 0
+    reused_count = 0
+    exported_files = []
+
     for i, mesh_frame in enumerate(mesh_sequence.frames):
-        # Load mesh
-        vertices, faces, colors = load_ply_mesh(mesh_frame.mesh_path)
-
         mesh_file = output_path / f"mesh_{i:04d}.{ext}"
+        exported_files.append(f"mesh_{i:04d}.{ext}")
 
-        if ext == "ply":
-            # PLY format - native vertex color support
-            _write_ply_with_colors(mesh_file, vertices, faces, colors)
-        else:
-            # OBJ format - vertex colors in extended format (limited support)
-            _write_obj_with_colors(mesh_file, vertices, faces, colors)
+        # Check if file already exists
+        if reuse_existing and mesh_file.exists():
+            reused_count += 1
+            continue
+
+        # Also check if source and target are the same directory
+        source_path = Path(mesh_frame.mesh_path)
+        if reuse_existing and source_path.parent == output_path:
+            # Source is already in output directory, check if it matches expected name
+            expected_names = [f"mesh_{i:04d}.ply", f"mesh_{i:04d}_mesh.ply"]
+            if source_path.name in expected_names or mesh_file.exists():
+                reused_count += 1
+                continue
+
+        # Load and export mesh
+        try:
+            vertices, faces, colors = load_ply_mesh(mesh_frame.mesh_path)
+
+            if ext == "ply":
+                _write_ply_with_colors(mesh_file, vertices, faces, colors)
+            else:
+                _write_obj_with_colors(mesh_file, vertices, faces, colors)
+
+            exported_count += 1
+        except Exception as e:
+            print(f"Error exporting mesh {i}: {e}")
 
     # Write metadata
     metadata_path = output_path / "sequence_info.json"
@@ -499,9 +583,12 @@ def export_mesh_sequence_obj(
             "frame_count": mesh_sequence.frame_count,
             "duration": mesh_sequence.duration,
             "format": ext,
-            "files": [f"mesh_{i:04d}.{ext}" for i in range(mesh_sequence.frame_count)]
+            "files": exported_files,
+            "exported": exported_count,
+            "reused": reused_count
         }, f, indent=2)
 
+    print(f"Export complete: {exported_count} new, {reused_count} reused")
     return str(output_path)
 
 
