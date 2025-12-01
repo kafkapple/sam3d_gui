@@ -669,6 +669,14 @@ def to_glb(
             rendering_engine=rendering_engine
         )
         texture = Image.fromarray(texture)
+
+        # Save texture image if path is provided
+        if save_rendered_views is not None:
+            import os
+            texture_path = os.path.join(save_rendered_views, "texture_map.png")
+            texture.save(texture_path)
+            logger.info(f"Saved texture map to {texture_path}")
+
         material = trimesh.visual.material.PBRMaterial(
             roughnessFactor=1.0,
             baseColorTexture=texture,
