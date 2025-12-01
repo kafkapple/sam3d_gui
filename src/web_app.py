@@ -8119,7 +8119,17 @@ dataset:
                         postprocess, simplify_ratio, vertex_color,
                         output_dir, fps, progress=gr.Progress()
                     ):
-                        """Generate mesh sequence for frame range"""
+                        """Generate mesh sequence for frame range with memory-efficient chunked processing"""
+                        import gc
+                        import torch
+
+                        def clear_gpu_memory():
+                            """Aggressively clear GPU memory"""
+                            gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
+
                         try:
                             if not state_data:
                                 return state_data, "❌ No session loaded"
@@ -8154,13 +8164,17 @@ dataset:
 
                             # Unload SAM2 before mesh generation
                             self.unload_sam2_models()
+                            clear_gpu_memory()
 
                             generated_meshes = []
                             failed = []
 
+                            # Chunked processing for memory efficiency
+                            CHUNK_SIZE = 5  # Process N frames, then clear memory
                             total = len(frames_to_process)
+
                             for i, frame_idx in enumerate(frames_to_process):
-                                progress((i + 0.5) / total, desc=f"Generating mesh {i+1}/{total} (frame {frame_idx})")
+                                progress((i + 0.3) / total, desc=f"Generating mesh {i+1}/{total} (frame {frame_idx})")
 
                                 frame_dir = Path(frame_dirs[frame_idx])
                                 original_path = frame_dir / "original.png"
@@ -8190,11 +8204,25 @@ dataset:
                                             'frame_idx': frame_idx,
                                             'mesh_path': str(mesh_path)
                                         })
+
+                                        # Explicitly delete reconstruction object
+                                        del reconstruction
                                     else:
                                         failed.append(f"Frame {frame_idx}: reconstruction failed")
 
                                 except Exception as e:
                                     failed.append(f"Frame {frame_idx}: {str(e)[:50]}")
+
+                                # Clear memory every CHUNK_SIZE frames
+                                if (i + 1) % CHUNK_SIZE == 0:
+                                    progress((i + 0.8) / total, desc=f"Clearing GPU memory after {i+1} frames...")
+                                    clear_gpu_memory()
+
+                                # Delete frame data
+                                del frame, mask
+
+                            # Final memory cleanup
+                            clear_gpu_memory()
 
                             # Save sequence metadata
                             seq_metadata = {
@@ -8234,6 +8262,7 @@ dataset:
 
                         except Exception as e:
                             import traceback
+                            clear_gpu_memory()
                             return state_data, f"❌ Error: {e}\n{traceback.format_exc()}"
 
                     def render_meshseq_video(state_data, output_dir, fps, progress=gr.Progress()):
