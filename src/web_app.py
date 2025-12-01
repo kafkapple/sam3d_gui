@@ -705,6 +705,69 @@ class SAMInteractiveWebApp:
 
         return None
 
+    def _compute_common_data_root(self, video_paths: list) -> str:
+        """
+        여러 비디오 경로에서 공통 루트 디렉토리 계산
+
+        Args:
+            video_paths: 비디오 파일 경로 리스트
+
+        Returns:
+            공통 루트 경로 문자열 (없으면 빈 문자열)
+        """
+        if not video_paths:
+            return ""
+
+        # 모든 경로를 Path 객체로 변환
+        paths = [Path(p).resolve() for p in video_paths]
+
+        # 공통 상위 경로 찾기
+        common_parts = list(paths[0].parts)
+
+        for path in paths[1:]:
+            path_parts = list(path.parts)
+            # 공통 부분만 유지
+            new_common = []
+            for i, (a, b) in enumerate(zip(common_parts, path_parts)):
+                if a == b:
+                    new_common.append(a)
+                else:
+                    break
+            common_parts = new_common
+
+        if not common_parts:
+            return ""
+
+        common_root = Path(*common_parts)
+        return str(common_root)
+
+    def _resolve_video_path(self, video_path: str, data_root: str = None) -> str:
+        """
+        상대 경로로 저장된 video_path를 절대 경로로 복원
+
+        Args:
+            video_path: 비디오 경로 (상대 또는 절대)
+            data_root: 기본 데이터 루트 경로 (None이면 현재 설정 사용)
+
+        Returns:
+            절대 경로 문자열
+        """
+        path = Path(video_path)
+
+        # 이미 절대 경로이면 그대로 반환
+        if path.is_absolute():
+            return str(path)
+
+        # data_root가 제공되면 결합
+        if data_root:
+            return str(Path(data_root) / video_path)
+
+        # 현재 설정된 data_dir 사용
+        if hasattr(self, 'current_data_dir') and self.current_data_dir:
+            return str(Path(self.current_data_dir) / video_path)
+
+        return video_path
+
     def _generate_unique_video_id(self, video_path: str) -> str:
         """
         비디오 경로에서 고유한 ID 생성 (mouse + camera + 파일명)
@@ -1220,8 +1283,13 @@ class SAMInteractiveWebApp:
 
             batch_results = self.batch_results
 
-            # 메타데이터
+            # data_root 계산 (모든 video_path의 공통 루트)
+            video_paths = [video_result['video_path'] for video_result in batch_results['videos']]
+            data_root = self._compute_common_data_root(video_paths)
+
+            # 메타데이터 (data_root를 최상단에 배치하여 육안 확인 및 수정 용이)
             metadata = {
+                'data_root': data_root,  # 최상단: 다른 환경으로 이동 시 이 값만 수정하면 됨
                 'session_id': session_id,
                 'session_type': 'batch',
                 'timestamp': timestamp,
@@ -1260,11 +1328,22 @@ class SAMInteractiveWebApp:
                 # result_dir 업데이트 (Export Fauna에서 사용)
                 video_result['result_dir'] = str(video_save_dir)
 
+                # video_path를 data_root 기준 상대 경로로 변환
+                abs_video_path = video_result['video_path']
+                if data_root:
+                    try:
+                        rel_video_path = str(Path(abs_video_path).relative_to(data_root))
+                    except ValueError:
+                        # data_root 하위가 아닌 경우 절대 경로 유지
+                        rel_video_path = abs_video_path
+                else:
+                    rel_video_path = abs_video_path
+
                 # 비디오 메타데이터
                 video_meta = {
                     'video_idx': video_idx,
                     'video_name': video_name,
-                    'video_path': video_result['video_path'],
+                    'video_path': rel_video_path,  # 상대 경로로 저장
                     'num_frames': video_result['frames'],
                     'saved_dir': str(video_save_dir.relative_to(output_dir))
                 }
@@ -1291,9 +1370,12 @@ class SAMInteractiveWebApp:
 
 - **세션 ID**: `{session_id}`
 - **저장 경로**: `{output_dir}`
+- **데이터 루트**: `{data_root}`
 - **비디오 수**: {len(batch_results['videos'])}
 - **총 프레임 수**: {batch_results['total_frames']}
 - **목표 프레임 수**: {batch_results['target_frames']} (각 비디오당)
+
+> 💡 **Portability**: 세션을 다른 환경으로 이동할 때 `data_root`만 변경하면 됩니다.
 
 ### 저장된 비디오:
 """
@@ -2245,6 +2327,13 @@ class SAMInteractiveWebApp:
             print(f"📂 Batch 세션 로드: {session_dir}")
             print(f"{'='*80}")
 
+            # data_root 가져오기 (새로운 형식)
+            data_root = metadata.get('data_root', '')
+            if data_root:
+                print(f"  📁 data_root: {data_root}")
+                # current_data_dir 업데이트 (다른 기능에서 사용)
+                self.current_data_dir = data_root
+
             # batch_results 복원
             video_results = []
             for video_meta in metadata['videos']:
@@ -2257,10 +2346,13 @@ class SAMInteractiveWebApp:
                 # 프레임 개수 확인
                 num_frames = len(list(video_result_dir.glob("frame_*")))
 
+                # video_path를 절대 경로로 복원
+                video_path = self._resolve_video_path(video_meta['video_path'], data_root)
+
                 video_results.append({
                     'video_idx': video_meta['video_idx'],
                     'video_name': video_meta['video_name'],
-                    'video_path': video_meta['video_path'],
+                    'video_path': video_path,  # 절대 경로로 복원됨
                     'frames': num_frames,
                     'result_dir': str(video_result_dir)
                 })
