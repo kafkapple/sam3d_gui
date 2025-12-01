@@ -212,6 +212,9 @@ class SAMInteractiveWebApp:
         self.augmentor = DataAugmentor()
         self.augmentation_preview = None
 
+        # 시작 시 최근 세션 자동 로드 시도
+        self._auto_load_recent_session()
+
         # LiteAnnotator 초기화 (Tab 3: Lite Mode)
         self.lite_annotator = None
         if SAM2_AVAILABLE:
@@ -704,6 +707,106 @@ class SAMInteractiveWebApp:
             return f"view{match.group(1)}"
 
         return None
+
+    def scan_sessions(self, sessions_dir: str = None) -> list:
+        """
+        세션 디렉토리를 스캔하여 사용 가능한 세션 목록 반환
+
+        Args:
+            sessions_dir: 세션 디렉토리 경로 (None이면 기본 경로 사용)
+
+        Returns:
+            세션 정보 리스트 (최신순 정렬)
+            [{
+                'session_id': str,
+                'session_type': str,
+                'path': str,
+                'timestamp': str,
+                'total_videos': int,
+                'total_frames': int,
+                'data_root': str,
+                'modified_time': float
+            }, ...]
+        """
+        import json
+
+        if sessions_dir is None:
+            sessions_dir = Path(self.default_output_dir) / "sessions"
+        else:
+            sessions_dir = Path(sessions_dir)
+
+        if not sessions_dir.exists():
+            return []
+
+        sessions = []
+
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+
+            metadata_path = session_dir / "session_metadata.json"
+            if not metadata_path.exists():
+                continue
+
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+
+                sessions.append({
+                    'session_id': metadata.get('session_id', session_dir.name),
+                    'session_type': metadata.get('session_type', 'unknown'),
+                    'path': str(session_dir),
+                    'timestamp': metadata.get('timestamp', ''),
+                    'total_videos': metadata.get('total_videos', 0),
+                    'total_frames': metadata.get('total_frames', 0),
+                    'data_root': metadata.get('data_root', ''),
+                    'modified_time': metadata_path.stat().st_mtime
+                })
+            except Exception as e:
+                print(f"  ⚠️  세션 스캔 실패 ({session_dir.name}): {e}")
+                continue
+
+        # 수정 시간 기준 내림차순 정렬 (최신순)
+        sessions.sort(key=lambda x: x['modified_time'], reverse=True)
+
+        return sessions
+
+    def _auto_load_recent_session(self):
+        """
+        앱 시작 시 가장 최근 세션 자동 로드 시도
+        """
+        try:
+            print("\n" + "=" * 60)
+            print("🔍 기존 세션 스캔 중...")
+            print("=" * 60)
+
+            sessions = self.scan_sessions()
+
+            if not sessions:
+                print("  ℹ️  저장된 세션 없음")
+                return
+
+            print(f"  📁 {len(sessions)}개 세션 발견")
+
+            # 가장 최근 세션 선택
+            recent_session = sessions[0]
+            print(f"\n  🔄 최근 세션 자동 로드: {recent_session['session_id']}")
+            print(f"     타입: {recent_session['session_type']}")
+            print(f"     비디오: {recent_session['total_videos']}개")
+            print(f"     프레임: {recent_session['total_frames']}개")
+
+            # 세션 로드
+            if recent_session['session_type'] == 'batch':
+                status, _ = self.load_batch_session(recent_session['path'])
+                if "완료" in status or "✅" in status:
+                    print(f"  ✅ 세션 로드 성공!")
+                else:
+                    print(f"  ⚠️  세션 로드 실패")
+            else:
+                print(f"  ℹ️  단일 세션은 자동 로드 미지원")
+
+        except Exception as e:
+            print(f"  ⚠️  자동 세션 로드 실패: {e}")
 
     def _compute_common_data_root(self, video_paths: list) -> str:
         """
