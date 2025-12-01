@@ -332,6 +332,11 @@ class InferencePipelinePointMap(InferencePipeline):
         pointmap=None,
         decode_formats=None,
         estimate_plane=False,
+        # Mesh postprocessing parameters
+        simplify_ratio=0.95,
+        texture_size=1024,
+        texture_nviews=100,
+        texture_render_resolution=1024,
     ) -> dict:
         image = self.merge_image_and_mask(image, mask)
         with self.device: 
@@ -391,7 +396,9 @@ class InferencePipelinePointMap(InferencePipeline):
                 slat, self.decode_formats if decode_formats is None else decode_formats
             )
             outputs = self.postprocess_slat_output(
-                outputs, with_mesh_postprocess, with_texture_baking, use_vertex_color
+                outputs, with_mesh_postprocess, with_texture_baking, use_vertex_color,
+                simplify_ratio=simplify_ratio, texture_size=texture_size,
+                texture_nviews=texture_nviews, texture_render_resolution=texture_render_resolution
             )
             glb = outputs.get("glb", None)
 
