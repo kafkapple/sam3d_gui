@@ -5738,7 +5738,7 @@ dataset:
                                     )
                                     # Texture baking 세부 옵션 (숨김)
                                     with gr.Column(visible=False) as batch_texture_options:
-                                        gr.Markdown("🚨 **경고**: Texture Baking은 nvdiffrast 내부 rasterization 사용으로 **Segfault 발생 가능**. 현재 불안정합니다. **Vertex Color ON + Texture Baking OFF** 권장.")
+                                        gr.Markdown("🚨 **경고**: Texture Baking은 nvdiffrast CUDA backend의 대형 메시(70K+ vertices) 처리 한계로 **headless 서버에서 Segfault 발생**. 로컬(디스플레이 있는 환경)에서만 사용 가능. **Vertex Color ON + Texture Baking OFF** 권장.")
                                         batch_mesh_texture_size = gr.Dropdown(
                                             label="Texture Size",
                                             choices=[512, 1024, 2048],
