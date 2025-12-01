@@ -5913,25 +5913,25 @@ dataset:
                                     batch_mesh_postprocess = gr.Checkbox(
                                         label="Mesh 후처리 (단순화, 홀 채우기)",
                                         value=False,
-                                        info="⚠️ nvdiffrast 필요 - 미설치 시 비활성화 권장"
+                                        info="⚠️ nvdiffrast 필요 - Texture Baking 사용 시 권장"
                                     )
                                     batch_mesh_simplify_ratio = gr.Slider(
-                                        label="Simplify Ratio",
+                                        label="Simplify Ratio (제거 비율)",
                                         minimum=0.5,
                                         maximum=0.99,
                                         value=0.95,
                                         step=0.05,
-                                        info="Face 유지 비율 (0.95 = 5% 제거)",
+                                        info="Face 제거 비율 (0.95 = 95% 제거, 5%만 유지). Texture Baking 시 0.98 권장",
                                         visible=False
                                     )
                                     batch_mesh_texture_baking = gr.Checkbox(
                                         label="Texture Baking",
                                         value=False,
-                                        info="⚠️ 불안정: nvdiffrast Segfault 위험. Vertex Color 권장"
+                                        info="⚠️ 불안정: Mesh 후처리 + 높은 Simplify Ratio(0.98) 필수"
                                     )
                                     # Texture baking 세부 옵션 (숨김)
                                     with gr.Column(visible=False) as batch_texture_options:
-                                        gr.Markdown("🚨 **경고**: Texture Baking은 nvdiffrast CUDA backend의 대형 메시(70K+ vertices) 처리 한계로 **headless 서버에서 Segfault 발생**. 로컬(디스플레이 있는 환경)에서만 사용 가능. **Vertex Color ON + Texture Baking OFF** 권장.")
+                                        gr.Markdown("🚨 **경고**: Texture Baking은 **Mesh 후처리 + Simplify Ratio ≥ 0.98**이 필수입니다. 대형 메시(70K+ vertices)는 nvdiffrast CUDA backend에서 Segfault를 유발합니다. 충분한 단순화 없이는 **Vertex Color ON + Texture Baking OFF**를 권장합니다.")
                                         batch_mesh_texture_size = gr.Dropdown(
                                             label="Texture Size",
                                             choices=[512, 1024, 2048],
@@ -5964,11 +5964,26 @@ dataset:
                                         inputs=[batch_mesh_postprocess],
                                         outputs=[batch_mesh_simplify_ratio]
                                     )
-                                    # 텍스처 베이킹 체크박스에 따라 세부 옵션 표시
+
+                                    # 텍스처 베이킹 활성화 시: postprocess 자동 활성화 + simplify_ratio 0.98 권장
+                                    def on_texture_baking_change(enabled):
+                                        if enabled:
+                                            return (
+                                                gr.update(visible=True),  # texture_options visible
+                                                gr.update(value=True),     # postprocess 자동 켜기
+                                                gr.update(visible=True, value=0.98),  # simplify_ratio visible + 0.98
+                                            )
+                                        else:
+                                            return (
+                                                gr.update(visible=False),  # texture_options hidden
+                                                gr.update(),               # postprocess 유지
+                                                gr.update(),               # simplify_ratio 유지
+                                            )
+
                                     batch_mesh_texture_baking.change(
-                                        fn=lambda x: gr.update(visible=x),
+                                        fn=on_texture_baking_change,
                                         inputs=[batch_mesh_texture_baking],
-                                        outputs=[batch_texture_options]
+                                        outputs=[batch_texture_options, batch_mesh_postprocess, batch_mesh_simplify_ratio]
                                     )
 
                                 with gr.Row():
