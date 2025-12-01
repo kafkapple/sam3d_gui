@@ -46,13 +46,13 @@ class SAM3DGUI:
         self.crop_image_pairs = []
         self.crop_preview_idx = 0
 
-        # Setup UI
-        self.setup_ui()
-
-        # Default data directory (one level above project root)
+        # Default data directory (one level above project root) - must be set before setup_ui
         project_root = Path(__file__).parent.parent
         self.data_dir = str(project_root.parent / "data" / "markerless_mouse")
         self.output_dir = str(project_root / "outputs")
+
+        # Setup UI
+        self.setup_ui()
 
     def setup_ui(self):
         """Setup the user interface"""
