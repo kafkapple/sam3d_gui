@@ -3550,7 +3550,7 @@ SAM2 체크포인트가 없습니다.
         stage1_steps: int = 25,
         stage2_steps: int = 25,
         with_postprocess: bool = False,
-        simplify_ratio: float = 0.95,
+        simplify_ratio: float = 0.98,
         with_texture_baking: bool = False,
         texture_size: int = 1024,
         use_vertex_color: bool = True,
@@ -3801,7 +3801,7 @@ meshlab {exported_files[0] if exported_files else output_path}
         stage1_steps: int = 25,
         stage2_steps: int = 25,
         with_postprocess: bool = False,
-        simplify_ratio: float = 0.95,
+        simplify_ratio: float = 0.98,
         with_texture_baking: bool = False,
         texture_size: int = 1024,
         use_vertex_color: bool = True,
@@ -4041,7 +4041,7 @@ meshlab {exported_files[0] if exported_files else output_path}
         stage1_steps: int = 25,
         stage2_steps: int = 25,
         with_postprocess: bool = False,
-        simplify_ratio: float = 0.95,
+        simplify_ratio: float = 0.98,
         with_texture_baking: bool = False,
         texture_size: int = 1024,
         use_vertex_color: bool = True,
@@ -4252,7 +4252,7 @@ meshlab {exported_files[0] if exported_files else output_path}
         stage1_steps: int = 25,
         stage2_steps: int = 25,
         with_postprocess: bool = False,
-        simplify_ratio: float = 0.95,
+        simplify_ratio: float = 0.98,
         with_texture_baking: bool = False,
         texture_size: int = 1024,
         use_vertex_color: bool = True,
@@ -5919,9 +5919,9 @@ dataset:
                                         label="Simplify Ratio (제거 비율)",
                                         minimum=0.5,
                                         maximum=0.99,
-                                        value=0.95,
-                                        step=0.05,
-                                        info="Face 제거 비율 (0.95 = 95% 제거, 5%만 유지). Texture Baking 시 0.98 권장",
+                                        value=0.98,
+                                        step=0.01,
+                                        info="Face 제거 비율 (0.98 = 98% 제거, 2%만 유지). Texture Baking 필수",
                                         visible=False
                                     )
                                     batch_mesh_texture_baking = gr.Checkbox(
@@ -7914,7 +7914,7 @@ dataset:
                                 )
                                 meshseq_simplify_ratio = gr.Slider(
                                     label="Simplify Ratio",
-                                    minimum=0.5, maximum=0.99, value=0.95, step=0.05
+                                    minimum=0.5, maximum=0.99, value=0.98, step=0.01
                                 )
                                 meshseq_vertex_color = gr.Checkbox(
                                     label="Vertex Color",
