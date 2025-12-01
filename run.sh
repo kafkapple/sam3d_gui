@@ -73,6 +73,15 @@ check_existing_process
 # 환경 변수 설정 (SAM3D 초기화 스킵)
 export LIDRA_SKIP_INIT=1
 
+# CUDA 환경 설정 (nvdiffrast JIT 컴파일용)
+# 시스템에 여러 CUDA 버전이 있을 경우, PyTorch와 맞는 버전 사용
+if [[ -d "/usr/local/cuda-11.8" ]]; then
+    export CUDA_HOME=/usr/local/cuda-11.8
+    export PATH=/usr/local/cuda-11.8/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
+    echo "✓ CUDA 11.8 환경 설정됨 (Texture Baking 지원)"
+fi
+
 echo "Conda 환경 활성화: sam3d_gui"
 echo "웹 인터페이스 시작..."
 echo ""
