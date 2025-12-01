@@ -772,14 +772,14 @@ class SAMInteractiveWebApp:
 
         return video_name
 
-    def scan_batch_videos(self, data_dir: str, pattern: str = "*.mp4") -> Tuple[List[str], str, gr.CheckboxGroup]:
+    def scan_batch_videos(self, data_dir: str, pattern: str = "*") -> Tuple[List[str], str, gr.CheckboxGroup]:
         """
         폴더 내 모든 비디오 스캔 및 메타데이터 수집 (recursive)
         폴더별로 그룹화하여 표시
 
         Args:
             data_dir: 비디오가 있는 디렉토리
-            pattern: 비디오 파일 패턴 (예: *.mp4, *.avi)
+            pattern: 비디오 파일 패턴 (예: *.mp4, *.avi, * for all)
 
         Returns:
             (비디오 경로 리스트, 상태 메시지, CheckboxGroup 업데이트)
@@ -791,7 +791,15 @@ class SAMInteractiveWebApp:
                 return [], f"❌ 디렉토리를 찾을 수 없습니다: {data_dir}", empty_checkbox
 
             # 비디오 파일 찾기 (recursive)
-            video_files = sorted(data_path.rglob(pattern))
+            # 패턴이 *이면 모든 비디오 확장자 검색
+            video_extensions = ['.mp4', '.avi', '.mov', '.mkv']
+            if pattern == "*" or pattern == "*.*":
+                video_files = []
+                for ext in video_extensions:
+                    video_files.extend(data_path.rglob(f"*{ext}"))
+                video_files = sorted(set(video_files))
+            else:
+                video_files = sorted(data_path.rglob(pattern))
 
             if not video_files:
                 empty_checkbox = gr.CheckboxGroup(choices=[], value=[])
@@ -5242,8 +5250,8 @@ dataset:
 
                             batch_pattern = gr.Textbox(
                                 label="파일 패턴",
-                                value="*.mp4",
-                                info="예: *.mp4, *.avi, video_*.mp4"
+                                value="*",
+                                info="예: * (모든 비디오), *.mp4, *.avi, video_*.mp4"
                             )
 
                             batch_scan_btn = gr.Button("📂 비디오 스캔", variant="primary")
